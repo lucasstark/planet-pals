@@ -1,15 +1,15 @@
 #!/bin/sh
 # Regenerates voice/*.m4a with macOS text-to-speech. Run from the repo root: sh tools/make-voice.sh
-# Change VOICE to any name from `say -v ?` (enhanced/premium voices sound much better once downloaded
-# in System Settings > Accessibility > Spoken Content > System Voice > Manage Voices).
+# Uses the Mac's system voice (System Settings > Accessibility > Spoken Content) unless VOICE names one
+# from `say -v ?`. Note: `say` silently falls back to the default if the name is not installed.
 set -e
-VOICE="${VOICE:-Samantha}"
+VOICE="${VOICE:-}"
 RATE="${RATE:-165}"
 out="$(dirname "$0")/../voice"
 mkdir -p "$out"
 
 clip() { # clip <file> <text>
-  say -v "$VOICE" -r "$RATE" -o "/tmp/pp-voice.aiff" "$2"
+  say ${VOICE:+-v "$VOICE"} -r "$RATE" -o "/tmp/pp-voice.aiff" "$2"
   afconvert -f m4af -d aac -b 48000 "/tmp/pp-voice.aiff" "$out/$1.m4a"
 }
 
