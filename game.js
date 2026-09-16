@@ -12,7 +12,6 @@ let H = 0;
 const PLANETS = [
   {
     name: 'Mercury', size: 0.45, span: 1, note: 0, glow: '#d8d2ca',
-    fact: 'Mercury is the closest planet to the Sun.',
     base: '#a9a39c',
     detail(x, y, r) {
       ctx.fillStyle = 'rgba(90,84,78,0.55)';
@@ -23,7 +22,6 @@ const PLANETS = [
   },
   {
     name: 'Venus', size: 0.58, span: 1, note: 1, glow: '#ffe2a0',
-    fact: 'Venus is the hottest planet.',
     base: '#e9c77b',
     detail(x, y, r) {
       ctx.fillStyle = 'rgba(255,240,200,0.45)';
@@ -35,7 +33,6 @@ const PLANETS = [
   },
   {
     name: 'Earth', size: 0.62, span: 1, note: 2, glow: '#8fd3ff',
-    fact: 'Earth is our home!',
     base: '#3b82d6',
     detail(x, y, r) {
       ctx.fillStyle = '#4caf50';
@@ -49,7 +46,6 @@ const PLANETS = [
   },
   {
     name: 'Mars', size: 0.5, span: 1, note: 3, glow: '#ff9a6e',
-    fact: 'Mars is the red planet.',
     base: '#d4623a',
     detail(x, y, r) {
       ctx.fillStyle = 'rgba(130,45,20,0.5)';
@@ -61,7 +57,6 @@ const PLANETS = [
   },
   {
     name: 'Jupiter', size: 1, span: 1, note: 4, glow: '#ffd9a8',
-    fact: 'Jupiter is the biggest planet!',
     base: '#e9d3b0',
     bands: ['#e9d3b0', '#c99a6b', '#f1e2c8', '#b7825a', '#efdcbc', '#c99a6b', '#e6caa3'],
     detail(x, y, r) {
@@ -71,7 +66,6 @@ const PLANETS = [
   },
   {
     name: 'Saturn', size: 0.85, span: 1.75, note: 5, glow: '#fff0b8',
-    fact: 'Saturn has big, beautiful rings.',
     base: '#f0dca5',
     bands: ['#f0dca5', '#d9bd7f', '#efe0b8', '#cfae6c', '#f0dca5'],
     faceY: -0.12,
@@ -79,7 +73,6 @@ const PLANETS = [
   },
   {
     name: 'Uranus', size: 0.7, span: 1.35, note: 6, glow: '#c6f6f8',
-    fact: 'Uranus spins on its side.',
     base: '#9fe3e6',
     detail(x, y, r) {
       ctx.fillStyle = 'rgba(95,180,189,0.35)';
@@ -89,7 +82,6 @@ const PLANETS = [
   },
   {
     name: 'Neptune', size: 0.68, span: 1, note: 7, glow: '#9db4ff',
-    fact: 'Neptune is very cold and windy.',
     base: '#4f74e8',
     detail(x, y, r) {
       ctx.fillStyle = 'rgba(30,45,130,0.6)';
@@ -99,8 +91,6 @@ const PLANETS = [
     },
   },
 ];
-
-const SUN_FACT = 'The Sun! The Sun is a giant star.';
 
 // ---------- State ----------
 const state = {
@@ -335,48 +325,56 @@ const sfx = {
 };
 
 // ---------- Voice ----------
-let voice = null;
-const hasSpeech = 'speechSynthesis' in window;
+// Pre-rendered clips (see tools/make-voice.sh) played through Web Audio, because
+// speechSynthesis is silent on the kids' devices. Keys map to voice/<key>.m4a.
+const clips = new Map();
 
-const PREFERRED_VOICES = ['Samantha', 'Karen', 'Moira', 'Google US English', 'Microsoft Aria'];
-
-function pickVoice() {
-  const voices = speechSynthesis.getVoices();
-  const en = voices.filter((v) => /^en/i.test(v.lang));
-  voice =
-    PREFERRED_VOICES.map((n) => en.find((v) => v.name.startsWith(n))).find(Boolean) ||
-    en.find((v) => /en[-_]US/i.test(v.lang)) ||
-    en[0] ||
-    null;
+function loadClip(key) {
+  if (!clips.has(key)) {
+    clips.set(
+      key,
+      fetch(`voice/${key}.m4a`)
+        .then((r) => r.arrayBuffer())
+        .then((buf) => audio.decodeAudioData(buf))
+        .catch(() => null)
+    );
+  }
+  return clips.get(key);
 }
 
-if (hasSpeech) {
-  pickVoice();
-  speechSynthesis.onvoiceschanged = pickVoice;
+function preloadVoice() {
+  ['tap', 'sun', 'expert', 'yay'].forEach(loadClip);
+  for (const p of PLANETS) ['name', 'fact', 'find', 'found', 'thats'].forEach((k) => loadClip(`${k}-${p.name}`));
 }
 
-let speechUnlocked = false;
-let utterance = null; // Held so Chrome doesn't garbage-collect it mid-sentence.
+let sayGen = 0;
+let current = null;
 
-// iOS only allows speech once speak() has been called directly inside a tap.
-function unlockSpeech() {
-  if (!hasSpeech || speechUnlocked) return;
-  speechUnlocked = true;
-  speechSynthesis.speak(new SpeechSynthesisUtterance(' '));
+function stopSpeaking() {
+  sayGen += 1;
+  if (current) current.stop();
+  current = null;
 }
 
-function say(text) {
-  if (!hasSpeech) return;
-  if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
-  // Chrome and Safari silently drop a speak() that immediately follows cancel().
-  setTimeout(() => {
-    utterance = new SpeechSynthesisUtterance(text);
-    if (voice) utterance.voice = voice;
-    utterance.lang = 'en-US';
-    utterance.rate = 0.9;
-    utterance.pitch = 1;
-    speechSynthesis.speak(utterance);
-  }, 80);
+// Plays the clips one after another; a new say() cuts off the previous one.
+async function say(...keys) {
+  if (!audio) return;
+  stopSpeaking();
+  const gen = sayGen;
+  for (const key of keys) {
+    const buffer = await loadClip(key);
+    if (gen !== sayGen) return;
+    if (!buffer) continue;
+    await new Promise((resolve) => {
+      current = audio.createBufferSource();
+      current.buffer = buffer;
+      current.connect(audio.destination);
+      current.onended = resolve;
+      current.start();
+    });
+    if (gen !== sayGen) return;
+  }
+  current = null;
 }
 
 // ---------- Word banner ----------
@@ -495,11 +493,11 @@ function setMode(mode) {
   state.ripples.length = 0;
   state.homeHold = null;
   state.word = null;
-  if (hasSpeech) speechSynthesis.cancel();
+  stopSpeaking();
 
   if (mode === 'explore') {
     layoutExplore();
-    say('Tap a planet!');
+    say('tap');
   } else if (mode === 'find') {
     state.find = null;
     newFindRound();
@@ -549,12 +547,12 @@ function newFindRound() {
   };
   layoutFind();
   showWord(target.name, target.glow, true);
-  say(`Can you find ${target.name}?`);
+  say(`find-${target.name}`);
 }
 
 function askAgain() {
   state.find.lastAsk = state.time;
-  say(`Can you find ${state.find.target.name}?`);
+  say(`find-${state.find.target.name}`);
 }
 
 // ---------- Input ----------
@@ -580,7 +578,7 @@ function speakerButton() {
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   unlockAudio();
-  unlockSpeech();
+  preloadVoice();
   const { clientX: x, clientY: y } = e;
 
   if (state.mode === 'menu') {
@@ -619,13 +617,13 @@ function exploreTap(x, y) {
     sfx.chime(b.planet.note);
     burst(b.x, b.y, b.planet.glow, 16);
     showWord(b.planet.name, b.planet.glow);
-    say(`${b.planet.name}! ${b.planet.fact}`);
+    say(`name-${b.planet.name}`, `fact-${b.planet.name}`);
   } else if (dist(x, y, state.sun.x, state.sun.y) <= state.sun.r) {
     state.sun.popAt = state.time;
     sfx.chime(8);
     burst(x, y, '#ffd24a', 20);
     showWord('Sun', '#ffd24a');
-    say(SUN_FACT);
+    say('sun');
   } else {
     sfx.sparkle();
     burst(x, y, '#ffffff', 5);
@@ -659,9 +657,9 @@ function findTap(x, y) {
     const bigWin = f.stars >= 10;
     if (bigWin) {
       for (let i = 0; i < 6; i++) burst(Math.random() * W, Math.random() * H, b.planet.glow, 20);
-      say(`You found ${f.target.name}! Ten stars! You are a space expert!`);
+      say('yay', `found-${f.target.name}`, 'expert');
     } else {
-      say(`Yay! You found ${f.target.name}!`);
+      say('yay', `found-${f.target.name}`);
     }
 
     setTimeout(() => {
@@ -673,7 +671,7 @@ function findTap(x, y) {
     b.wiggleAt = state.time;
     sfx.boop();
     f.lastAsk = state.time;
-    say(`That's ${b.planet.name}. Can you find ${f.target.name}?`);
+    say(`thats-${b.planet.name}`, `find-${f.target.name}`);
   }
 }
 
@@ -807,13 +805,6 @@ function drawMenu() {
   ctx.textBaseline = 'middle';
   ctx.font = `bold ${Math.round(H * 0.1)}px system-ui, sans-serif`;
   ctx.fillText('Planet Pals', W / 2, safeTop + H * 0.17);
-
-  // Open with ?speech to check whether the device has a text-to-speech voice at all.
-  if (location.search.includes('speech')) {
-    const count = hasSpeech ? speechSynthesis.getVoices().length : 0;
-    ctx.font = '18px system-ui, sans-serif';
-    ctx.fillText(`speech supported: ${hasSpeech ? 'yes' : 'no'} · voices: ${count}`, W / 2, H - 24);
-  }
 
   const [explore, find, music] = state.menuButtons;
   for (const btn of state.menuButtons) {
