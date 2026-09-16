@@ -1,5 +1,5 @@
 // Network-first: updates show up whenever the tablet is online; the cache keeps it playable offline.
-const CACHE = 'planet-pals-v1';
+const CACHE = 'planet-pals-v2';
 const FILES = ['./', 'index.html', 'game.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {

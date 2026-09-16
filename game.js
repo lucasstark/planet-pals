@@ -113,10 +113,13 @@ const state = {
   shooting: [],
   stars: [],
   find: null,
+  word: null,
+  ripples: [],
   homeHold: null,
 };
 
 const HOME = { x: 46, y: 46, r: 32 };
+let safeTop = 0; // iPad home-screen apps draw under the status bar.
 const HOME_HOLD_SECONDS = 1.2;
 
 // ---------- Drawing helpers ----------
@@ -335,9 +338,16 @@ const sfx = {
 let voice = null;
 const hasSpeech = 'speechSynthesis' in window;
 
+const PREFERRED_VOICES = ['Samantha', 'Karen', 'Moira', 'Google US English', 'Microsoft Aria'];
+
 function pickVoice() {
   const voices = speechSynthesis.getVoices();
-  voice = voices.find((v) => /en[-_]US/i.test(v.lang)) || voices.find((v) => /^en/i.test(v.lang)) || null;
+  const en = voices.filter((v) => /^en/i.test(v.lang));
+  voice =
+    PREFERRED_VOICES.map((n) => en.find((v) => v.name.startsWith(n))).find(Boolean) ||
+    en.find((v) => /en[-_]US/i.test(v.lang)) ||
+    en[0] ||
+    null;
 }
 
 if (hasSpeech) {
@@ -363,10 +373,41 @@ function say(text) {
     utterance = new SpeechSynthesisUtterance(text);
     if (voice) utterance.voice = voice;
     utterance.lang = 'en-US';
-    utterance.rate = 0.85;
-    utterance.pitch = 1.2;
+    utterance.rate = 0.9;
+    utterance.pitch = 1;
     speechSynthesis.speak(utterance);
   }, 80);
+}
+
+// ---------- Word banner ----------
+// Big friendly text so the game still teaches the names when there is no voice.
+function showWord(text, color, sticky = false) {
+  state.word = { text, color, at: state.time, sticky };
+}
+
+function drawWord() {
+  const w = state.word;
+  if (!w) return;
+  const age = state.time - w.at;
+  const alpha = w.sticky ? 1 : Math.max(0, Math.min(1, 3.5 - age));
+  if (alpha <= 0) {
+    state.word = null;
+    return;
+  }
+  const pop = age < 0.3 ? 1 + 0.25 * (1 - age / 0.3) : 1;
+  const size = Math.round(Math.min(H * 0.13, W * 0.09) * pop);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `900 ${size}px "Arial Rounded MT Bold", "Nunito", system-ui, sans-serif`;
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = size * 0.16;
+  ctx.strokeStyle = '#1b1530';
+  ctx.strokeText(w.text, W / 2, safeTop + H * 0.14);
+  ctx.fillStyle = w.color;
+  ctx.fillText(w.text, W / 2, safeTop + H * 0.14);
+  ctx.restore();
 }
 
 // ---------- Layout ----------
@@ -377,6 +418,8 @@ function resize() {
   canvas.width = Math.round(W * dpr);
   canvas.height = Math.round(H * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  safeTop = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-top')) || 0;
+  HOME.y = 46 + safeTop;
 
   state.stars = Array.from({ length: Math.round((W * H) / 4500) }, () => ({
     x: Math.random() * W,
@@ -388,14 +431,16 @@ function resize() {
 
   if (state.mode === 'explore') layoutExplore();
   else if (state.mode === 'find') layoutFind();
+  else if (state.mode === 'music') layoutMusic();
   else layoutMenu();
 }
 
 function layoutMenu() {
-  const r = Math.min(W * 0.17, H * 0.26);
+  const r = Math.min(W * 0.13, H * 0.22);
   state.menuButtons = [
-    { mode: 'explore', label: 'Explore', x: W * 0.32, y: H * 0.58, r },
-    { mode: 'find', label: 'Find it!', x: W * 0.68, y: H * 0.58, r },
+    { mode: 'explore', label: 'Explore', x: W * 0.2, y: H * 0.6, r },
+    { mode: 'find', label: 'Find it!', x: W * 0.5, y: H * 0.6, r },
+    { mode: 'music', label: 'Music', x: W * 0.8, y: H * 0.6, r },
   ];
 }
 
@@ -419,20 +464,37 @@ function layoutExplore() {
   });
 }
 
+// Planets in a zig-zag row under the word banner, sized to fit their rings.
+function layoutRow(planets, gap, minSize) {
+  const margin = H * 0.04;
+  const widths = planets.map((p) => 2 * Math.max(p.size, minSize) * p.span);
+  const totalUnits = widths.reduce((a, b) => a + b, 0) + gap * (planets.length + 1);
+  const unit = Math.min((W - 2 * margin) / totalUnits, H * 0.22);
+  let x = margin + ((W - 2 * margin) - totalUnits * unit) / 2 + gap * unit;
+  state.bodies = planets.map((p, i) => {
+    const w = widths[i] * unit;
+    const y = safeTop + H * 0.62 + (i % 2 ? H * 0.09 : -H * 0.09);
+    const body = makeBody(p, x + w / 2, y, Math.max(p.size, minSize) * unit);
+    x += w + gap * unit;
+    return body;
+  });
+}
+
 function layoutFind() {
-  const choices = state.find.choices;
-  const slot = W / choices.length;
-  const maxR = Math.min((slot / 2 / 1.75) * 0.95, H * 0.2);
-  state.bodies = choices.map((p, i) =>
-    makeBody(p, slot * (i + 0.5), H * 0.58 + (i % 2 ? H * 0.07 : -H * 0.07), maxR * (0.72 + 0.28 * p.size))
-  );
+  layoutRow(state.find.choices, 0.4, 0.75);
+}
+
+function layoutMusic() {
+  layoutRow(PLANETS, 0.12, 0.6);
 }
 
 // ---------- Modes ----------
 function setMode(mode) {
   state.mode = mode;
   state.particles.length = 0;
+  state.ripples.length = 0;
   state.homeHold = null;
+  state.word = null;
   if (hasSpeech) speechSynthesis.cancel();
 
   if (mode === 'explore') {
@@ -441,9 +503,32 @@ function setMode(mode) {
   } else if (mode === 'find') {
     state.find = null;
     newFindRound();
+  } else if (mode === 'music') {
+    layoutMusic();
   } else {
     layoutMenu();
   }
+}
+
+// ---------- Music mode ----------
+// A free-play keyboard: every planet is a note, nothing to get wrong.
+function ripple(x, y, color) {
+  state.ripples.push({ x, y, color, life: 0, max: 0.9 });
+}
+
+function musicTap(x, y) {
+  const b = hitBody(x, y);
+  if (!b) {
+    sfx.sparkle();
+    burst(x, y, '#ffffff', 5);
+    shootingStar(x, y);
+    return;
+  }
+  b.popAt = state.time;
+  sfx.chime(b.planet.note);
+  burst(b.x, b.y, b.planet.glow, 10);
+  ripple(b.x, b.y, b.planet.glow);
+  showWord(b.planet.name, b.planet.glow);
 }
 
 function newFindRound() {
@@ -463,6 +548,7 @@ function newFindRound() {
     stars: state.find ? state.find.stars : 0,
   };
   layoutFind();
+  showWord(target.name, target.glow, true);
   say(`Can you find ${target.name}?`);
 }
 
@@ -515,7 +601,8 @@ canvas.addEventListener('pointerdown', (e) => {
   }
 
   if (state.mode === 'explore') exploreTap(x, y);
-  else findTap(x, y);
+  else if (state.mode === 'find') findTap(x, y);
+  else musicTap(x, y);
 });
 
 function endHold(e) {
@@ -531,11 +618,13 @@ function exploreTap(x, y) {
     b.popAt = state.time;
     sfx.chime(b.planet.note);
     burst(b.x, b.y, b.planet.glow, 16);
+    showWord(b.planet.name, b.planet.glow);
     say(`${b.planet.name}! ${b.planet.fact}`);
   } else if (dist(x, y, state.sun.x, state.sun.y) <= state.sun.r) {
     state.sun.popAt = state.time;
     sfx.chime(8);
     burst(x, y, '#ffd24a', 20);
+    showWord('Sun', '#ffd24a');
     say(SUN_FACT);
   } else {
     sfx.sparkle();
@@ -615,6 +704,9 @@ function update(dt) {
   if (state.mode === 'find' && !state.find.locked && state.time - state.find.lastAsk > 15) {
     askAgain();
   }
+
+  for (const r of state.ripples) r.life += dt;
+  state.ripples = state.ripples.filter((r) => r.life < r.max);
 }
 
 // ---------- Draw ----------
@@ -695,8 +787,9 @@ function drawFindHud() {
   const n = 10;
   const gap = Math.min(40, (W - 220) / n);
   const x0 = W / 2 - (gap * (n - 1)) / 2;
+  const y = H - Math.max(28, H * 0.06);
   for (let i = 0; i < n; i++) {
-    starPath(x0 + i * gap, HOME.y, gap * 0.42, gap * 0.19, 0);
+    starPath(x0 + i * gap, y, gap * 0.42, gap * 0.19, 0);
     if (i < state.find.stars) {
       ctx.fillStyle = '#ffd84a';
       ctx.fill();
@@ -713,7 +806,7 @@ function drawMenu() {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.font = `bold ${Math.round(H * 0.1)}px system-ui, sans-serif`;
-  ctx.fillText('Planet Pals', W / 2, H * 0.17);
+  ctx.fillText('Planet Pals', W / 2, safeTop + H * 0.17);
 
   // Open with ?speech to check whether the device has a text-to-speech voice at all.
   if (location.search.includes('speech')) {
@@ -722,7 +815,7 @@ function drawMenu() {
     ctx.fillText(`speech supported: ${hasSpeech ? 'yes' : 'no'} · voices: ${count}`, W / 2, H - 24);
   }
 
-  const [explore, find] = state.menuButtons;
+  const [explore, find, music] = state.menuButtons;
   for (const btn of state.menuButtons) {
     const pulse = 1 + 0.03 * Math.sin(state.time * 3 + btn.x);
     ctx.fillStyle = 'rgba(255,255,255,0.1)';
@@ -739,6 +832,22 @@ function drawMenu() {
   drawPlanet(PLANETS[2], find.x - find.r * 0.1, find.y + find.r * 0.05, find.r * 0.5, { blink: blinkFor(5) });
   ctx.font = `${Math.round(find.r * 0.55)}px system-ui, sans-serif`;
   ctx.fillText('🔍', find.x + find.r * 0.38, find.y - find.r * 0.3);
+  drawPlanet(PLANETS[4], music.x - music.r * 0.1, music.y + music.r * 0.05, music.r * 0.5, { blink: blinkFor(7) });
+  ctx.font = `${Math.round(music.r * 0.55)}px system-ui, sans-serif`;
+  ctx.fillText('🎵', music.x + music.r * 0.38, music.y - music.r * 0.3);
+}
+
+function drawRipples() {
+  ctx.lineWidth = 4;
+  for (const r of state.ripples) {
+    const k = r.life / r.max;
+    ctx.globalAlpha = 1 - k;
+    ctx.strokeStyle = r.color;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, 30 + k * H * 0.45, 0, TAU);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
 }
 
 function drawParticles() {
@@ -757,8 +866,10 @@ function draw() {
     drawMenu();
   } else {
     if (state.mode === 'explore') drawSun(state.sun);
+    drawRipples();
     drawBodies();
     if (state.mode === 'find') drawFindHud();
+    drawWord();
     drawHome();
   }
   drawParticles();
