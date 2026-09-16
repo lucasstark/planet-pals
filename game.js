@@ -106,6 +106,10 @@ const state = {
   word: null,
   ripples: [],
   homeHold: null,
+  talk: true, // Explore: true = say the name and a fact, false = music only
+  echo: { notes: [], lastTapAt: -99, playing: null },
+  holds: new Map(), // pointerId -> { body, since, sound }
+  shakeAt: -99,
 };
 
 const HOME = { x: 46, y: 46, r: 32 };
@@ -322,7 +326,56 @@ const sfx = {
   fanfare: () => [0, 2, 4, 5, 7].forEach((n, k) => tone(SCALE[n], k * 0.11, 0.5, 0.16)),
   sparkle: () => tone(SCALE[6 + Math.floor(Math.random() * 3)], 0, 0.25, 0.06, 'triangle'),
   boop: () => tone(300, 0, 0.25, 0.12),
+  thump: () => {
+    if (!audio) return;
+    const t0 = audio.currentTime;
+    const o = audio.createOscillator();
+    const g = audio.createGain();
+    o.frequency.setValueAtTime(170, t0);
+    o.frequency.exponentialRampToValueAtTime(45, t0 + 0.35);
+    g.gain.setValueAtTime(0.6, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
+    o.connect(g).connect(audio.destination);
+    o.start(t0);
+    o.stop(t0 + 0.55);
+  },
 };
+
+// Held finger: a soft note with slow vibrato that fades in, so a quick tap barely hears it.
+function startSustain(freq) {
+  if (!audio) return null;
+  const t0 = audio.currentTime;
+  const o = audio.createOscillator();
+  const o2 = audio.createOscillator();
+  const g = audio.createGain();
+  const lfo = audio.createOscillator();
+  const lfoGain = audio.createGain();
+  o.frequency.value = freq;
+  o2.type = 'triangle';
+  o2.frequency.value = freq * 2;
+  lfo.frequency.value = 5;
+  lfoGain.gain.value = freq * 0.012;
+  lfo.connect(lfoGain).connect(o.frequency);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(0.14, t0 + 0.6);
+  const g2 = audio.createGain();
+  g2.gain.value = 0.25;
+  o.connect(g);
+  o2.connect(g2).connect(g);
+  g.connect(audio.destination);
+  o.start(t0);
+  o2.start(t0);
+  lfo.start(t0);
+  return {
+    stop() {
+      const t = audio.currentTime;
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(g.gain.value, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+      [o, o2, lfo].forEach((n) => n.stop(t + 0.3));
+    },
+  };
+}
 
 // ---------- Voice ----------
 // Pre-rendered clips (see tools/make-voice.sh) played through Web Audio, because
@@ -429,16 +482,14 @@ function resize() {
 
   if (state.mode === 'explore') layoutExplore();
   else if (state.mode === 'find') layoutFind();
-  else if (state.mode === 'music') layoutMusic();
   else layoutMenu();
 }
 
 function layoutMenu() {
-  const r = Math.min(W * 0.13, H * 0.22);
+  const r = Math.min(W * 0.17, H * 0.26);
   state.menuButtons = [
-    { mode: 'explore', label: 'Explore', x: W * 0.2, y: H * 0.6, r },
-    { mode: 'find', label: 'Find it!', x: W * 0.5, y: H * 0.6, r },
-    { mode: 'music', label: 'Music', x: W * 0.8, y: H * 0.6, r },
+    { mode: 'explore', label: 'Explore', x: W * 0.32, y: H * 0.58, r },
+    { mode: 'find', label: 'Find it!', x: W * 0.68, y: H * 0.58, r },
   ];
 }
 
@@ -458,6 +509,15 @@ function layoutExplore() {
     const w = widths[i] * unit;
     const body = makeBody(p, x + w / 2, H * 0.55 + Math.sin(i * 1.1 + 0.5) * H * 0.14, p.size * unit);
     x += w + gap * unit;
+    // Drift back and forth along an arc around the sun; inner planets move faster.
+    const orbitR = dist(body.x, body.y, state.sun.x, state.sun.y);
+    body.orbit = {
+      r: orbitR,
+      a0: Math.atan2(body.y - state.sun.y, body.x - state.sun.x),
+      amp: (H * 0.07) / orbitR,
+      speed: 0.22 + 0.5 * (1 - i / (PLANETS.length - 1)),
+      phase: i * 1.9,
+    };
     return body;
   });
 }
@@ -482,10 +542,6 @@ function layoutFind() {
   layoutRow(state.find.choices, 0.4, 0.75);
 }
 
-function layoutMusic() {
-  layoutRow(PLANETS, 0.12, 0.6);
-}
-
 // ---------- Modes ----------
 function setMode(mode) {
   state.mode = mode;
@@ -493,40 +549,93 @@ function setMode(mode) {
   state.ripples.length = 0;
   state.homeHold = null;
   state.word = null;
+  state.echo = { notes: [], lastTapAt: -99, playing: null };
+  releaseAllHolds();
   stopSpeaking();
 
   if (mode === 'explore') {
     layoutExplore();
-    say('tap');
+    if (state.talk) say('tap');
   } else if (mode === 'find') {
     state.find = null;
     newFindRound();
-  } else if (mode === 'music') {
-    layoutMusic();
   } else {
     layoutMenu();
   }
 }
 
-// ---------- Music mode ----------
-// A free-play keyboard: every planet is a note, nothing to get wrong.
 function ripple(x, y, color) {
   state.ripples.push({ x, y, color, life: 0, max: 0.9 });
 }
 
-function musicTap(x, y) {
-  const b = hitBody(x, y);
-  if (!b) {
-    sfx.sparkle();
-    burst(x, y, '#ffffff', 5);
-    shootingStar(x, y);
+// ---------- Echo (music mode) ----------
+// After a pause, the planets replay the last few notes the kid tapped, with the same rhythm.
+const ECHO_MAX_NOTES = 8;
+const ECHO_MAX_GAP = 0.8;
+const ECHO_AFTER = 2.5;
+
+function echoRecord(body) {
+  const e = state.echo;
+  e.playing = null;
+  const gap = e.notes.length ? Math.min(state.time - e.lastTapAt, ECHO_MAX_GAP) : 0;
+  e.notes.push({ body, gap });
+  if (e.notes.length > ECHO_MAX_NOTES) e.notes.shift();
+  e.lastTapAt = state.time;
+}
+
+function updateEcho() {
+  const e = state.echo;
+  if (state.mode !== 'explore' || state.talk) return;
+  if (!e.playing) {
+    if (e.notes.length >= 2 && state.holds.size === 0 && state.time - e.lastTapAt > ECHO_AFTER) {
+      e.playing = { index: 0, nextAt: state.time + 0.4 };
+    }
     return;
   }
-  b.popAt = state.time;
-  sfx.chime(b.planet.note);
-  burst(b.x, b.y, b.planet.glow, 10);
-  ripple(b.x, b.y, b.planet.glow);
-  showWord(b.planet.name, b.planet.glow);
+  const p = e.playing;
+  if (state.time < p.nextAt) return;
+  const { body } = e.notes[p.index];
+  playBody(body, false);
+  ripple(body.x, body.y, '#ffffff');
+  p.index += 1;
+  if (p.index >= e.notes.length) {
+    e.notes = [];
+    e.playing = null;
+  } else {
+    p.nextAt = state.time + e.notes[p.index].gap;
+  }
+}
+
+// Sounds and animates a planet or the sun; `live` means a real finger did it.
+function playBody(body, live) {
+  body.popAt = state.time;
+  if (body === state.sun) {
+    if (state.talk) sfx.chime(8);
+    else {
+      sfx.thump();
+      state.shakeAt = state.time;
+    }
+    burst(body.x + body.r * 0.8, body.y, '#ffd24a', 20);
+    showWord('Sun', '#ffd24a');
+    if (live && state.talk) say('sun');
+  } else {
+    sfx.chime(body.planet.note);
+    burst(body.x, body.y, body.planet.glow, live ? 16 : 8);
+    showWord(body.planet.name, body.planet.glow);
+    if (live && state.talk) say(`name-${body.planet.name}`, `fact-${body.planet.name}`);
+  }
+}
+
+// ---------- Hold to sustain ----------
+function releaseHold(pointerId) {
+  const h = state.holds.get(pointerId);
+  if (!h) return;
+  if (h.sound) h.sound.stop();
+  state.holds.delete(pointerId);
+}
+
+function releaseAllHolds() {
+  for (const id of [...state.holds.keys()]) releaseHold(id);
 }
 
 function newFindRound() {
@@ -598,37 +707,45 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
 
-  if (state.mode === 'explore') exploreTap(x, y);
-  else if (state.mode === 'find') findTap(x, y);
-  else musicTap(x, y);
+  if (state.mode === 'explore') exploreTap(x, y, e.pointerId);
+  else findTap(x, y);
 });
 
 function endHold(e) {
   if (state.homeHold && state.homeHold.id === e.pointerId) state.homeHold = null;
+  releaseHold(e.pointerId);
 }
 canvas.addEventListener('pointerup', endHold);
 canvas.addEventListener('pointercancel', endHold);
+canvas.addEventListener('pointerleave', endHold);
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-function exploreTap(x, y) {
-  const b = hitBody(x, y);
-  if (b) {
-    b.popAt = state.time;
-    sfx.chime(b.planet.note);
-    burst(b.x, b.y, b.planet.glow, 16);
-    showWord(b.planet.name, b.planet.glow);
-    say(`name-${b.planet.name}`, `fact-${b.planet.name}`);
-  } else if (dist(x, y, state.sun.x, state.sun.y) <= state.sun.r) {
-    state.sun.popAt = state.time;
-    sfx.chime(8);
-    burst(x, y, '#ffd24a', 20);
-    showWord('Sun', '#ffd24a');
-    say('sun');
-  } else {
+function exploreTap(x, y, pointerId) {
+  const tb = talkButton();
+  if (dist(x, y, tb.x, tb.y) <= tb.r + 10) {
+    state.talk = !state.talk;
+    state.echo = { notes: [], lastTapAt: -99, playing: null };
+    stopSpeaking();
+    sfx.fanfare();
+    showWord(state.talk ? 'Talk' : 'Music', '#ffffff');
+    return;
+  }
+
+  const body = hitBody(x, y) || (dist(x, y, state.sun.x, state.sun.y) <= state.sun.r ? state.sun : null);
+  if (!body) {
     sfx.sparkle();
     burst(x, y, '#ffffff', 5);
     shootingStar(x, y);
+    return;
   }
+  playBody(body, true);
+  if (!state.talk) echoRecord(body);
+  const freq = body === state.sun ? 65.41 : SCALE[body.planet.note];
+  state.holds.set(pointerId, { body, since: state.time, sound: startSustain(freq) });
+}
+
+function talkButton() {
+  return { x: W - HOME.x, y: HOME.y, r: HOME.r };
 }
 
 function findTap(x, y) {
@@ -705,6 +822,16 @@ function update(dt) {
 
   for (const r of state.ripples) r.life += dt;
   state.ripples = state.ripples.filter((r) => r.life < r.max);
+
+  if (state.mode === 'explore') {
+    for (const b of state.bodies) {
+      const o = b.orbit;
+      const a = o.a0 + o.amp * Math.sin(state.time * o.speed + o.phase);
+      b.x = state.sun.x + o.r * Math.cos(a);
+      b.y = state.sun.y + o.r * Math.sin(a);
+    }
+    updateEcho();
+  }
 }
 
 // ---------- Draw ----------
@@ -749,12 +876,36 @@ function drawBodies() {
       else if (state.time - f.askedAt > 6) glow = 0.5 + 0.5 * Math.sin(state.time * 5);
     }
 
+    const held = heldFor(b);
+    if (held > 0) drawHoldRing(b.x + dx, b.y + dy, b.r * s, held, b.planet.glow);
     drawPlanet(b.planet, b.x + dx, b.y + dy, b.r * s, {
       blink: blinkFor(b.seed),
       glow,
-      happy: state.time - b.popAt < 1.5,
+      happy: held > 0 || state.time - b.popAt < 1.5,
     });
   }
+}
+
+function heldFor(body) {
+  let best = 0;
+  for (const h of state.holds.values()) {
+    if (h.body === body) best = Math.max(best, state.time - h.since);
+  }
+  return best;
+}
+
+// Pulsing ring that grows the longer the finger stays down.
+function drawHoldRing(x, y, r, held, color) {
+  const grow = Math.min(held / 2, 1);
+  const pulse = 1 + 0.05 * Math.sin(state.time * 31);
+  ctx.save();
+  ctx.globalAlpha = 0.25 + 0.6 * grow;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 4 + 6 * grow;
+  ctx.beginPath();
+  ctx.arc(x, y, r * (1.35 + 0.6 * grow) * pulse, 0, TAU);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawEmojiButton(btn, emoji) {
@@ -806,7 +957,7 @@ function drawMenu() {
   ctx.font = `bold ${Math.round(H * 0.1)}px system-ui, sans-serif`;
   ctx.fillText('Planet Pals', W / 2, safeTop + H * 0.17);
 
-  const [explore, find, music] = state.menuButtons;
+  const [explore, find] = state.menuButtons;
   for (const btn of state.menuButtons) {
     const pulse = 1 + 0.03 * Math.sin(state.time * 3 + btn.x);
     ctx.fillStyle = 'rgba(255,255,255,0.1)';
@@ -823,9 +974,6 @@ function drawMenu() {
   drawPlanet(PLANETS[2], find.x - find.r * 0.1, find.y + find.r * 0.05, find.r * 0.5, { blink: blinkFor(5) });
   ctx.font = `${Math.round(find.r * 0.55)}px system-ui, sans-serif`;
   ctx.fillText('🔍', find.x + find.r * 0.38, find.y - find.r * 0.3);
-  drawPlanet(PLANETS[4], music.x - music.r * 0.1, music.y + music.r * 0.05, music.r * 0.5, { blink: blinkFor(7) });
-  ctx.font = `${Math.round(music.r * 0.55)}px system-ui, sans-serif`;
-  ctx.fillText('🎵', music.x + music.r * 0.38, music.y - music.r * 0.3);
 }
 
 function drawRipples() {
@@ -852,18 +1000,30 @@ function drawParticles() {
 }
 
 function draw() {
+  const shake = state.time - state.shakeAt;
+  if (shake < 0.35) {
+    const k = (1 - shake / 0.35) * 8;
+    ctx.save();
+    ctx.translate((Math.random() - 0.5) * k, (Math.random() - 0.5) * k);
+  }
   drawBackground();
   if (state.mode === 'menu') {
     drawMenu();
   } else {
-    if (state.mode === 'explore') drawSun(state.sun);
+    if (state.mode === 'explore') {
+      drawSun(state.sun);
+      const held = heldFor(state.sun);
+      if (held > 0) drawHoldRing(state.sun.x, state.sun.y, state.sun.r * 0.75, held, '#ffd24a');
+    }
     drawRipples();
     drawBodies();
     if (state.mode === 'find') drawFindHud();
+    if (state.mode === 'explore') drawEmojiButton(talkButton(), state.talk ? '🗣️' : '🎵');
     drawWord();
     drawHome();
   }
   drawParticles();
+  if (shake < 0.35) ctx.restore();
 }
 
 // ---------- Loop ----------
