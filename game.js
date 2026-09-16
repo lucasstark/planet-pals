@@ -345,15 +345,28 @@ if (hasSpeech) {
   speechSynthesis.onvoiceschanged = pickVoice;
 }
 
+let speechUnlocked = false;
+let utterance = null; // Held so Chrome doesn't garbage-collect it mid-sentence.
+
+// iOS only allows speech once speak() has been called directly inside a tap.
+function unlockSpeech() {
+  if (!hasSpeech || speechUnlocked) return;
+  speechUnlocked = true;
+  speechSynthesis.speak(new SpeechSynthesisUtterance(' '));
+}
+
 function say(text) {
   if (!hasSpeech) return;
-  speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  if (voice) u.voice = voice;
-  u.lang = 'en-US';
-  u.rate = 0.85;
-  u.pitch = 1.2;
-  speechSynthesis.speak(u);
+  if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
+  // Chrome and Safari silently drop a speak() that immediately follows cancel().
+  setTimeout(() => {
+    utterance = new SpeechSynthesisUtterance(text);
+    if (voice) utterance.voice = voice;
+    utterance.lang = 'en-US';
+    utterance.rate = 0.85;
+    utterance.pitch = 1.2;
+    speechSynthesis.speak(utterance);
+  }, 80);
 }
 
 // ---------- Layout ----------
@@ -481,6 +494,7 @@ function speakerButton() {
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   unlockAudio();
+  unlockSpeech();
   const { clientX: x, clientY: y } = e;
 
   if (state.mode === 'menu') {
@@ -700,6 +714,13 @@ function drawMenu() {
   ctx.textBaseline = 'middle';
   ctx.font = `bold ${Math.round(H * 0.1)}px system-ui, sans-serif`;
   ctx.fillText('Planet Pals', W / 2, H * 0.17);
+
+  // Open with ?speech to check whether the device has a text-to-speech voice at all.
+  if (location.search.includes('speech')) {
+    const count = hasSpeech ? speechSynthesis.getVoices().length : 0;
+    ctx.font = '18px system-ui, sans-serif';
+    ctx.fillText(`speech supported: ${hasSpeech ? 'yes' : 'no'} · voices: ${count}`, W / 2, H - 24);
+  }
 
   const [explore, find] = state.menuButtons;
   for (const btn of state.menuButtons) {
