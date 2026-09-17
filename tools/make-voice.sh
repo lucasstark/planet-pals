@@ -17,6 +17,8 @@ clip tap "Tap a planet!"
 clip sun "The Sun! The Sun is a giant star."
 clip expert "Ten stars! You are a space expert!"
 clip yay "Yay!"
+clip good-job "Good job! Five stars!"
+clip hooray "Hooray! Ten planets found! You are a space expert!"
 
 i=0
 for name in Mercury Venus Earth Mars Jupiter Saturn Uranus Neptune; do

@@ -1,7 +1,7 @@
 // Network-first: updates show up whenever the tablet is online; the cache keeps it playable offline.
-const CACHE = 'planet-pals-v4';
+const CACHE = 'planet-pals-v7';
 const PLANETS = ['Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune'];
-const VOICE = ['tap', 'sun', 'expert', 'yay']
+const VOICE = ['tap', 'sun', 'expert', 'yay', 'good-job', 'hooray']
   .concat(PLANETS.flatMap((p) => ['name', 'fact', 'find', 'found', 'thats'].map((k) => `${k}-${p}`)))
   .map((k) => `voice/${k}.m4a`);
 const FILES = ['./', 'index.html', 'game.js', 'manifest.json', 'icon-192.png', 'icon-512.png', ...VOICE];
