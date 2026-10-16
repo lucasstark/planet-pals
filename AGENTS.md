@@ -21,7 +21,7 @@ during the handoff. Keep this guide current when architecture or workflows chang
   and animation loop. No imports, framework, dependencies, or build step.
 - `manifest.json`: fullscreen, landscape-oriented PWA; relative start URL/scope.
 - `sw.js`: network-first GET caching, precaches app files and all 48 voice clips.
-  Cache version at review: `planet-pals-v11`. Registers on HTTPS or `localhost`.
+  Cache version at review: `planet-pals-v12`. Registers on HTTPS or `localhost`.
 - `voice/*.m4a`: bundled speech, decoded and played through Web Audio.
 - `tools/make-voice.sh`: macOS `say` + `afconvert` voice generation. Run from root
   with `sh tools/make-voice.sh`; optional `VOICE` and `RATE` environment variables
@@ -233,7 +233,7 @@ measurements of the reference video. No gameplay edits were made during analysis
   when tapped in Talk or Music, with a name banner and sparkles. They do not
   interrupt a song. `nameStars` shares drawing/hit geometry. Recorded clips are
   `voice/Jettson.m4a` and `voice/Langston.m4a`; generation, preload, and precache
-  lists include both. Service worker cache is now `planet-pals-v11`.
+  lists include both. Service worker cache is now `planet-pals-v12`.
 - Nine Node VM regressions pass, covering full song playback, timing/cleanup,
   play-along/echo isolation, and personal-star routing along with prior gameplay.
   Browser checks at 1024×768 covered playback, Stop, and both named stars, with
@@ -255,7 +255,7 @@ measurements of the reference video. No gameplay edits were made during analysis
 - `layoutSilly`, `sillyTap`, `updateSilly`, `drawSilly`, and `stopSilly` own the mode.
   Each tap replaces the previous sound phrase (at most eight oscillator handles),
   and existing particle limits bound rapid-mash effects. The sound envelopes use
-  Web Audio; no new dependencies. Service worker cache is `planet-pals-v11`.
+  Web Audio; no new dependencies. Service worker cache is `planet-pals-v12`.
 - All eleven Node VM regressions pass, including immediate Home via the actual
   input handler, rapid taps, tickle onset/repeat/release, multi-pointer behavior,
   and lifecycle cleanup. Browser checks at 1024×768 verified the three-button
@@ -275,3 +275,37 @@ measurements of the reference video. No gameplay edits were made during analysis
   turn, no restart during a turn, surprise cycling, and unchanged target geometry.
   The 1024×768 browser preview verified tones/reactions and rapid-tap spinning
   without console warnings/errors. Actual tablet sound/touch checks remain.
+
+## Planet playground release (2026-10-16)
+
+This section supersedes the earlier hold-to-tickle interaction descriptions.
+
+- Silly mode now includes a nine-friend bottom dock: Sun plus all eight planets.
+  `sillyFriends` shares drawing and hit geometry. Select any friend for the hero;
+  its original surface, rings, and face orientation are preserved. Selection
+  survives resize while active gestures/sounds are cleared.
+- Tapping the hero retains musical tones and silly reactions, including the
+  six-tap automatic spin. Dragging rotates the selected character directly;
+  release coasts with exponentially decaying momentum. Center-origin horizontal
+  swipes work too. Eight pixels distinguish dragging from touch jitter. A drag
+  catches an existing automatic spin without changing the current orientation.
+- `sillyDrag` and `endSillyTouch` manage one rotation owner plus other pointer
+  positions. Pointer capture, cancel, leave, lost capture, stale release velocity,
+  blur, visibility, resize, selection, and mode navigation have cleanup paths.
+- Holding the hero no longer tickles. The large feather prop starts/restarts a
+  finite 2.2-second synthesized laugh, an animated rubbing feather, and a happy
+  squirm. The present prop cycles the existing three accessories for five seconds.
+  Toys and friend selection have priority over the hero's generous touch bounds.
+- Fourteen Node regressions pass, including feather timing, disabled hold tickle,
+  angle wrapping, direct drag/inertia, multi-pointer ownership, all nine friends,
+  and lifecycle cleanup. The 1024×768 browser preview checked a Sun drag, feather
+  reaction, Saturn selection, and a party hat without console warnings/errors.
+  Physical iPad/Fire touch and audio remain unverified.
+- Release worker is `planet-pals-v12`; it supersedes commit `6d8f5f7` (v11).
+  The live site is https://lucasstark.github.io/planet-pals/. GitHub Pages deploys
+  `main` from repository root; pushing main publishes. The user requested this
+  playground version be committed and pushed before the Astra handoff.
+- Direction: a coherent toddler planet playground with musical cause/effect,
+  tactile character play, clear pictorial toys, and a full cast. Future tracing
+  planet names and arranging planets in solar order were discussed as later
+  activities, not implemented or authorized as part of this prototype.

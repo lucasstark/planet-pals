@@ -594,7 +594,7 @@ function layoutMenu() {
 
 function layoutSilly() {
   state.bodies = [];
-  state.sun = { x: W / 2, y: H * .55, r: Math.min(W * .24, H * .26), seed: 1.3, popAt: -99 };
+  state.sun = { x: W / 2, y: H * .49, r: Math.min(W * .24, H * .23), seed: 1.3, popAt: -99 };
 }
 
 function layoutExplore() {
@@ -667,7 +667,7 @@ function setMode(mode) {
     layoutExplore();
     if (state.talk) say('tap');
   } else if (mode === 'silly') {
-    state.silly = { count: 0, streak: 0, lastTap: -99, effect: 0, sounds: [], touches: new Map(), tickling: false, laughAt: 0, spinAt: -99, spins: 0, surprise: 0, note: 0 };
+    state.silly = { count: 0, streak: 0, lastTap: -99, effect: 0, sounds: [], touches: new Map(), tickling: false, laughAt: 0, spinAt: -99, spins: 0, surprise: 0, note: 0, accessoryUntil: -99, tickleUntil: -99, angle: 0, velocity: 0, dragId: null, friend: null };
     layoutSilly();
   } else if (mode === 'find') {
     state.find = null;
@@ -681,7 +681,7 @@ function ripple(x, y, color) {
   state.ripples.push({ x, y, color, life: 0, max: 0.9 });
 }
 
-// ---------- Silly mode: one big, forgiving mash target ----------
+// ---------- Silly Sun: musical friend, finger spins, and two toy props ----------
 function stopSillySounds() {
   if (!state.silly) return;
   for (const sound of state.silly.sounds) sound?.stop();
@@ -696,17 +696,49 @@ function stopSilly() {
   state.silly.streak = 0;
   state.silly.lastTap = -99;
   state.silly.spinAt = -99;
+  state.silly.angle = state.silly.velocity = 0;
+  state.silly.dragId = null;
+  state.silly.tickleUntil = -99;
+  state.silly.accessoryUntil = -99;
 }
 
 function sillyTap(x, y, pointerId) {
   const sun = state.sun, silly = state.silly;
+  const friend = sillyFriends().find(item => dist(x, y, item.x, item.y) <= item.hit);
+  if (friend) {
+    stopSilly();
+    silly.friend = friend.planet;
+    const note = friend.planet?.note ?? 0;
+    silly.sounds = [tone(SCALE[note], 0, .6, .18), tone(SCALE[note] * 2, 0, .4, .05, 'triangle')];
+    showWord(friend.planet?.name || 'Sun', friend.planet?.glow || '#ffe497');
+    return;
+  }
+  const toy = sillyToys().find(toy => dist(x, y, toy.x, toy.y) <= toy.r + 10);
+  if (toy) {
+    if (toy.kind === 'feather') {
+      silly.tickleUntil = state.time + 2.2;
+      silly.laughAt = state.time;
+      showWord('Hee hee hee!', '#ffe497');
+      updateSilly(0);
+    } else {
+      silly.surprise = silly.spins++ % 3;
+      silly.accessoryUntil = state.time + 5;
+      sun.popAt = state.time;
+      burst(sun.x, sun.y, '#ff99cb', 24);
+      showWord('Ta-da!', '#ffe497');
+      stopSillySounds();
+      silly.sounds = [tone(SCALE[0], 0, .4, .13), tone(SCALE[4], .1, .4, .13)];
+    }
+    return;
+  }
   if (dist(x, y, sun.x, sun.y) > sun.r * 1.4) {
     shootingStar(x, y); return;
   }
   const streak = state.time - silly.lastTap < 1.2 ? silly.streak + 1 : 1;
   // Replace the last sound so rapid or multi-finger mashing stays bounded.
   stopSillySounds();
-  silly.touches.set(pointerId, state.time);
+  silly.touches.set(pointerId, { x, y, startX: x, startY: y, at: null, dragging: false, lastMove: -99 });
+  if (silly.dragId === null) silly.dragId = pointerId;
   silly.streak = streak >= 6 ? 0 : streak;
   silly.lastTap = state.time;
   silly.effect = streak >= 6 ? 3 : silly.count % 3;
@@ -715,6 +747,7 @@ function sillyTap(x, y, pointerId) {
   if (streak >= 6 && state.time - silly.spinAt >= 1.1) {
     silly.spinAt = state.time;
     silly.surprise = silly.spins++ % 3;
+    silly.accessoryUntil = state.time + 2.4;
   }
   sun.popAt = state.time;
   const effect = silly.effect;
@@ -736,17 +769,72 @@ function sillyTap(x, y, pointerId) {
   showWord(streak >= 6 ? 'Wheee!' : ['Boing!', 'Squeak!', 'Pbbbt!', 'Hee hee hee!'][effect], '#ffe497');
 }
 
-function updateSilly() {
+function sillyDrag(e) {
   const silly = state.silly;
-  if (!silly || !silly.touches.size) return;
-  const since = Math.min(...silly.touches.values());
-  if (state.time - since < .35) return;
-  if (!silly.tickling) {
-    silly.tickling = true;
-    silly.laughAt = state.time;
-    showWord('Hee hee hee!', '#ffe497');
+  if (state.mode !== 'silly' || !silly) return;
+  const touch = silly.touches.get(e.pointerId);
+  if (!touch) return;
+  const x = e.clientX, y = e.clientY, sun = state.sun;
+  const at = e.timeStamp ?? performance.now();
+  if (e.pointerId === silly.dragId) {
+    if (!touch.dragging && dist(x, y, touch.startX, touch.startY) > 8) {
+      touch.dragging = true;
+      // Catch the Sun at its current orientation, including an automatic spin.
+      silly.angle = sillyRotation();
+      silly.spinAt = -99;
+      silly.velocity = 0;
+      silly.streak = 0;
+    }
+    if (touch.dragging) {
+      const before = Math.atan2(touch.y - sun.y, touch.x - sun.x);
+      const after = Math.atan2(y - sun.y, x - sun.x);
+      // Near the middle, a sideways swipe still gives the Sun a useful turn.
+      const delta = Math.min(dist(x, y, sun.x, sun.y), dist(touch.x, touch.y, sun.x, sun.y)) < sun.r * .25
+        ? (x - touch.x) / sun.r
+        : Math.atan2(Math.sin(after - before), Math.cos(after - before));
+      const dt = Math.max(.008, Math.min(.08, touch.at === null ? .016 : (at - touch.at) / 1000));
+      silly.angle += delta;
+      silly.velocity = Math.max(-10, Math.min(10, delta / dt));
+      touch.lastMove = state.time;
+    }
   }
-  // Keep the laughing face alive, with one bounded giggle phrase at a time.
+  touch.x = x; touch.y = y; touch.at = at;
+}
+
+function endSillyTouch(e) {
+  const silly = state.silly;
+  if (!silly) return;
+  const touch = silly.touches.get(e.pointerId);
+  silly.touches.delete(e.pointerId);
+  if (silly.dragId !== e.pointerId) return;
+  const cancelled = e.type === 'pointercancel' || e.type === 'pointerleave';
+  if (cancelled || !touch?.dragging || state.time - touch.lastMove > .12) silly.velocity = 0;
+  // One finger owns rotation; another resting finger can take over smoothly.
+  const next = silly.touches.entries().next().value;
+  silly.dragId = next ? next[0] : null;
+  if (next) {
+    const point = next[1];
+    point.startX = point.x; point.startY = point.y; point.at = null; point.dragging = false;
+    silly.velocity = 0;
+  }
+}
+
+function updateSilly(dt) {
+  const silly = state.silly;
+  if (!silly) return;
+  if (silly.dragId === null && Math.abs(silly.velocity) > .01) {
+    // Exact exponential decay gives the same gentle coast at different frame rates.
+    const decay = Math.exp(-3 * dt);
+    silly.angle += silly.velocity * (1 - decay) / 3;
+    silly.velocity *= decay;
+  }
+  const tickling = state.time < silly.tickleUntil;
+  if (!tickling) {
+    if (silly.tickling) stopSillySounds();
+    silly.tickling = false;
+    return;
+  }
+  silly.tickling = true;
   silly.effect = 3;
   silly.lastTap = state.time;
   if (state.time < silly.laughAt) return;
@@ -757,9 +845,69 @@ function updateSilly() {
 }
 
 function sillyRotation() {
-  const k = Math.max(0, Math.min(1, (state.time - state.silly.spinAt) / 1.1));
-  // Ease into and out of one complete turn. Further taps never restart it.
-  return TAU * (k * k * (3 - 2 * k));
+  const silly = state.silly;
+  if (silly.spinAt === -99) return silly.angle;
+  const k = Math.max(0, Math.min(1, (state.time - silly.spinAt) / 1.1));
+  return silly.angle + TAU * (k * k * (3 - 2 * k));
+}
+
+function sillyToys() {
+  return ['feather', 'gift'].map((kind, i) => ({ kind, x: W * (.12 + i * .76), y: H * .56, r: Math.min(50, H * .065) }));
+}
+
+function sillyFriends() {
+  const gap = W / 9;
+  return [null, ...PLANETS].map((planet, i) => ({ planet, x: gap * (i + .5), y: H * .9, r: Math.min(30, H * .04, gap * .29), hit: Math.min(44, gap * .48) }));
+}
+
+function drawSillyFriends() {
+  ctx.fillStyle = 'rgba(13,23,47,.9)'; ctx.fillRect(0, H * .825, W, H * .175);
+  for (const friend of sillyFriends()) {
+    const selected = state.silly.friend === friend.planet;
+    if (selected) {
+      ctx.fillStyle = '#35466d'; circle(friend.x, friend.y, friend.r * 1.45);
+      ctx.strokeStyle = '#ffe497'; ctx.lineWidth = 2; ctx.stroke();
+    }
+    if (friend.planet) drawPlanet(friend.planet, friend.x, friend.y, friend.r / Math.max(1, friend.planet.span * .8), { happy: selected });
+    else { smallSun(friend.x, friend.y, friend.r * .85); drawFace(friend.x, friend.y, friend.r * .8, false, 0, true); }
+    ctx.font = `700 ${Math.min(16, W * .016)}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = selected ? '#fff0a3' : '#d7e3ff';
+    ctx.fillText(friend.planet?.name || 'Sun', friend.x, H * .975);
+  }
+}
+
+function drawFeather(x, y, size, tilt = -.5) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(tilt);
+  ctx.fillStyle = '#e9fbff';
+  ctx.beginPath(); ctx.moveTo(0, -size * .65);
+  ctx.bezierCurveTo(size * .55, -size * .3, size * .45, size * .15, 0, size * .4);
+  ctx.bezierCurveTo(-size * .5, size * .2, -size * .45, -size * .35, 0, -size * .65); ctx.fill();
+  ctx.strokeStyle = '#6abdd2'; ctx.lineWidth = Math.max(2, size * .04); ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(0, size * .65); ctx.lineTo(0, -size * .53); ctx.stroke();
+  for (let i = 0; i < 5; i++) {
+    const fy = size * (-.38 + i * .15), width = size * (.13 + .13 * Math.sin(i / 4 * Math.PI));
+    ctx.beginPath(); ctx.moveTo(-width, fy - size * .1); ctx.lineTo(0, fy + size * .12); ctx.lineTo(width, fy - size * .1); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawSillyToys() {
+  for (const toy of sillyToys()) {
+    const active = toy.kind === 'feather' ? state.silly.tickling : state.time < state.silly.accessoryUntil;
+    ctx.fillStyle = active ? '#476b83' : '#28364f'; circle(toy.x, toy.y, toy.r);
+    ctx.strokeStyle = active ? '#fff0a3' : '#7286ad'; ctx.lineWidth = 3; ctx.stroke();
+    if (toy.kind === 'feather') drawFeather(toy.x, toy.y, toy.r * 1.1);
+    else {
+      const r = toy.r;
+      ctx.fillStyle = '#ef8bb8'; ctx.fillRect(toy.x - r * .5, toy.y - r * .25, r, r * .8);
+      ctx.fillStyle = '#ffd96a'; ctx.fillRect(toy.x - r * .09, toy.y - r * .3, r * .18, r * .85);
+      ctx.fillRect(toy.x - r * .56, toy.y - r * .35, r * 1.12, r * .18);
+      ctx.strokeStyle = '#ffd96a'; ctx.lineWidth = r * .1;
+      for (const side of [-1, 1]) { ctx.beginPath(); ctx.ellipse(toy.x + side * r * .2, toy.y - r * .46, r * .2, r * .12, side * .5, 0, TAU); ctx.stroke(); }
+    }
+    ctx.font = '700 18px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff0bc';
+    ctx.fillText(toy.kind === 'feather' ? 'Tickle' : 'Surprise', toy.x, toy.y + toy.r + 19);
+  }
 }
 
 function drawSilly() {
@@ -767,12 +915,15 @@ function drawSilly() {
   const age = state.time - silly.lastTap;
   const active = age < 1.2;
   const wobble = active ? Math.sin((silly.tickling ? state.time : age) * 24) * .1 * Math.exp(-age * 3) : 0;
-  const r = sun.r * (active ? 1 + .07 * Math.sin((silly.tickling ? state.time : age) * 18) * Math.exp(-age * 3) : 1);
-  const spinning = state.time - silly.spinAt < 1.1;
-  const surprise = state.time - silly.spinAt < 2.4;
-  ctx.save(); ctx.translate(sun.x, sun.y); ctx.rotate(wobble + (spinning ? sillyRotation() : 0));
-  smallSun(0, 0, r);
-  drawFace(0, 0, r * .9, active && silly.effect === 3, 0, true, active ? .5 + .3 * Math.sin((silly.tickling ? state.time : age) * 20) : 0);
+  const friend = silly.friend;
+  const r = sun.r * (friend?.ring ? .78 : 1) * (active ? 1 + .07 * Math.sin((silly.tickling ? state.time : age) * 18) * Math.exp(-age * 3) : 1);
+  const dragging = silly.touches.get(silly.dragId)?.dragging;
+  const surprise = state.time < silly.accessoryUntil;
+  ctx.save(); ctx.translate(sun.x, sun.y); ctx.rotate((dragging ? 0 : wobble) + sillyRotation());
+  const mouth = active ? .5 + .3 * Math.sin((silly.tickling ? state.time : age) * 20) : 0;
+  if (friend) drawPlanet(friend, 0, 0, r, { happy: true, blink: active && silly.effect === 3, mouth });
+  else { smallSun(0, 0, r); drawFace(0, 0, r * .9, active && silly.effect === 3, 0, true, mouth); }
+  ctx.save(); ctx.rotate(friend?.faceTilt || 0);
   if (active && silly.effect === 1) {
     ctx.strokeStyle = '#6c3483'; ctx.lineWidth = r * .055;
     for (const side of [-1, 1]) { ctx.beginPath(); ctx.arc(side * r * .27, -r * .12, r * .24, 0, TAU); ctx.stroke(); }
@@ -803,6 +954,7 @@ function drawSilly() {
     ctx.beginPath(); ctx.moveTo(-r * .08, -r * .12); ctx.lineTo(r * .08, -r * .12); ctx.stroke();
   }
   ctx.restore();
+  ctx.restore();
   if (active) {
     // Musical notes float above the Sun without affecting its fixed touch target.
     ctx.fillStyle = PLANETS[silly.note].glow; ctx.textAlign = 'center';
@@ -813,9 +965,12 @@ function drawSilly() {
     }
     ctx.globalAlpha = 1;
   }
-  if (!state.word || state.time - state.word.at > 3.5) sticker('Silly Sun!', W / 2, safeTop + H * .15, Math.min(64, W * .065), '#ffd66d');
+  if (!state.word || state.time - state.word.at > 3.5) sticker((friend?.name || 'Silly Sun') + '!', W / 2, safeTop + H * .15, Math.min(64, W * .065), '#ffd66d');
   ctx.font = `700 ${Math.min(26, W * .03)}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff0bc';
-  ctx.fillText(silly.tickling ? 'Tickle tickle!' : 'Tap for music • Tap fast to spin • Hold to tickle!', W / 2, H * .94);
+  ctx.fillText(silly.tickling ? 'Tickle tickle!' : 'Tap for music • Drag to spin!', W / 2, H * .79);
+  if (silly.tickling) drawFeather(sun.x + sun.r * .6 + Math.sin(state.time * 18) * 20, sun.y + sun.r * .05, sun.r * .65, -.6 + Math.sin(state.time * 15) * .25);
+  drawSillyToys();
+  drawSillyFriends();
 }
 
 // ---------- Pre-made songs ----------
@@ -1073,25 +1228,24 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
 
-  if (state.mode === 'silly') sillyTap(x, y, e.pointerId);
+  if (state.mode === 'silly') {
+    sillyTap(x, y, e.pointerId);
+    if (state.silly.touches.has(e.pointerId)) canvas.setPointerCapture?.(e.pointerId);
+  }
   else if (state.mode === 'explore') exploreTap(x, y, e.pointerId);
   else findTap(x, y);
 });
 
 function endHold(e) {
-  const silly = state.silly;
-  if (silly) {
-    silly.touches.delete(e.pointerId);
-    if (!silly.touches.size && silly.tickling) {
-      stopSillySounds();
-      silly.tickling = false;
-      silly.lastTap = state.time - 1.2;
-    }
-  }
+  endSillyTouch(e);
   releaseHold(e.pointerId);
 }
+canvas.addEventListener('pointermove', (e) => {
+  if (state.mode === 'silly') { e.preventDefault(); sillyDrag(e); }
+});
 canvas.addEventListener('pointerup', endHold);
 canvas.addEventListener('pointercancel', endHold);
+canvas.addEventListener('lostpointercapture', (e) => endHold({ pointerId: e.pointerId, type: 'pointercancel' }));
 canvas.addEventListener('pointerleave', endHold);
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -1214,7 +1368,7 @@ function findTap(x, y) {
 
 // ---------- Update ----------
 function update(dt) {
-  if (state.mode === 'silly') updateSilly();
+  if (state.mode === 'silly') updateSilly(dt);
   for (const p of state.particles) {
     p.life += dt;
     p.x += p.vx * dt;

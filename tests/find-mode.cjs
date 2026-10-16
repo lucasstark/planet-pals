@@ -209,31 +209,25 @@ test('Home navigates immediately on pointerdown and cleans up active sound', () 
   assert.ok(run('stopped') > 0);
 });
 
-test('Silly taps vary, rapid taps reward, tickles repeat until release and cleanup cancels', () => {
+test('Silly feather tickles on a tap, holding the character does not, and cleanup cancels', () => {
   const { run } = game();
   run(`setMode('silly'); const sounds=[];
-    tone=(freq,when,dur)=>{const sound={stopped:false,stop(){this.stopped=true;}}; sounds.push(sound); return sound;};`);
-  for (let i=0; i<6; i++) {
-    run(`sillyTap(state.sun.x,state.sun.y,1); endHold({pointerId:1}); state.time+=.1; draw();`);
-    assert.equal(run('state.silly.effect'), i === 5 ? 3 : i % 3);
-    assert.ok(run('state.silly.sounds.length') <= 8);
-  }
-  assert.ok(run('state.particles.length') <= 300);
-  run(`state.time+=2; sillyTap(state.sun.x,state.sun.y,1); state.time+=.2; update(.016);`);
-  assert.equal(run('state.silly.tickling'), false, 'quick taps do not tickle');
-  run('state.time+=.2; update(.016); draw();');
-  assert.equal(run('state.silly.tickling'), true);
+    tone=()=>{const sound={stopped:false,stop(){this.stopped=true;}}; sounds.push(sound); return sound;};
+    sillyTap(state.sun.x,state.sun.y,1); state.time+=3; update(.016);`);
+  assert.equal(run('state.silly.tickling'), false, 'holding the character leaves dragging available');
+  run(`endHold({pointerId:1}); const feather=sillyToys()[0]; sillyTap(feather.x,feather.y,2); endHold({pointerId:2}); draw();`);
+  assert.equal(run('state.silly.tickling'), true, 'one feather tap starts a timed laugh');
+  assert.equal(run('state.silly.touches.size'), 0, 'toy taps do not grab the character');
   run('state.time+=.5; update(.016); draw();');
   assert.equal(run('state.silly.sounds.length'), 3);
-  run('sillyTap(state.sun.x,state.sun.y,2); endHold({pointerId:1}); state.time+=.5; update(.016);');
-  assert.equal(run('state.silly.tickling'), true, 'one remaining finger keeps tickling');
-  run('endHold({pointerId:2});');
+  run('sillyTap(feather.x,feather.y,3); state.time+=2; update(.016);');
+  assert.equal(run('state.silly.tickling'), true, 'another tap refreshes the laugh');
+  run('state.time+=.3; update(.016);');
   assert.equal(run('state.silly.tickling'), false);
-  assert.equal(run('state.silly.sounds.length'), 0);
-  assert.equal(run('sounds.every(s=>s.stopped)'), true);
+  assert.equal(run('sounds.every(sound=>sound.stopped)'), true);
   for (const cleanup of ['quietGame()', 'resize()', "setMode('menu')"]) {
-    run(`setMode('silly'); sillyTap(state.sun.x,state.sun.y,1); state.time+=.4; update(.016); ${cleanup};`);
-    assert.equal(run('sounds.every(s=>s.stopped)'), true, cleanup);
+    run(`{ setMode('silly'); const toy=sillyToys()[0]; sillyTap(toy.x,toy.y,1); ${cleanup}; }`);
+    assert.equal(run('sounds.every(sound=>sound.stopped)'), true, cleanup);
     assert.equal(run('state.silly ? state.silly.touches.size : 0'), 0);
   }
 });
@@ -265,4 +259,48 @@ test('Silly taps use Music tones and six quick taps complete an uninterrupted fu
   }
   run('quietGame();');
   assert.equal(run('state.silly.spinAt'), -99);
+});
+
+
+test('finger dragging follows the angle, coasts on release, and ignores a stale or cancelled fling', () => {
+  const { run } = game();
+  run(`setMode('silly'); const cx=state.sun.x, cy=state.sun.y, radius=state.sun.r;
+    const move=(x,y,id=1,at=16)=>sillyDrag({clientX:x,clientY:y,pointerId:id,timeStamp:at});
+    sillyTap(cx+radius,cy,1); move(cx,cy+radius);`);
+  assert.ok(Math.abs(run('sillyRotation()')-Math.PI/2)<.00001);
+  const angle=run('sillyRotation()');
+  run('state.time+=.05; update(.05);');
+  assert.equal(run('sillyRotation()'), angle, 'no momentum while the finger owns the character');
+  run('endHold({pointerId:1,type:"pointerup"}); update(.05);');
+  assert.ok(run('sillyRotation()')>angle);
+  assert.ok(run('state.silly.velocity')<10);
+  run('quietGame(); sillyTap(cx-radius,cy+1,1); move(cx-radius,cy-1);');
+  assert.ok(Math.abs(run('sillyRotation()'))<.05, 'crossing the angle wrap does not jump a turn');
+  run('endHold({pointerId:1,type:"pointercancel"});');
+  assert.equal(run('state.silly.velocity'), 0);
+  run('sillyTap(cx,cy,1); move(cx+80,cy);');
+  assert.ok(run('sillyRotation()')>.1, 'a swipe starting in the middle still turns');
+  run('state.time+=.3; endHold({pointerId:1,type:"pointerup"});');
+  assert.equal(run('state.silly.velocity'), 0, 'holding still before release prevents a stale fling');
+  run('sillyTap(cx+radius,cy,1); sillyTap(cx-radius,cy,2); move(cx,cy+radius); endHold({pointerId:1});');
+  assert.equal(run('state.silly.dragId'), 2);
+  run('endHold({pointerId:2,type:"pointerleave"});');
+  assert.equal(run('state.silly.dragId'), null);
+  assert.equal(run('state.silly.velocity'), 0);
+});
+
+test('every planet and Sun can be selected, tickled, dressed up and resized', () => {
+  const { run } = game();
+  run("setMode('silly');");
+  assert.equal(run('sillyFriends().length'), 9);
+  for (let i=0;i<9;i++) {
+    run(`{ const friend=sillyFriends()[${i}]; sillyTap(friend.x,friend.y,1); }`);
+    assert.equal(run('state.silly.friend?.name || "Sun"'), ['Sun','Mercury','Venus','Earth','Mars','Jupiter','Saturn','Uranus','Neptune'][i]);
+    run('const feather'+i+'=sillyToys()[0]; sillyTap(feather'+i+'.x,feather'+i+'.y,2); draw();');
+    assert.equal(run('state.silly.tickling'), true);
+    run(`{ const gift=sillyToys()[1]; sillyTap(gift.x,gift.y,3); draw(); } resize(); draw();`);
+    assert.equal(run('state.silly.tickling'), false);
+    assert.equal(run('state.silly.touches.size'), 0);
+    assert.equal(run('state.silly.friend?.name || "Sun"'), ['Sun','Mercury','Venus','Earth','Mars','Jupiter','Saturn','Uranus','Neptune'][i]);
+  }
 });
