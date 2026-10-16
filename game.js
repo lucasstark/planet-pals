@@ -354,6 +354,7 @@ function burst(x, y, color, n) {
 function shootingStar(x, y) {
   const a = Math.PI * (0.15 + Math.random() * 0.2);
   const dir = Math.random() < 0.5 ? 1 : -1;
+  if (state.shooting.length >= 24) state.shooting.shift();
   state.shooting.push({ x, y, vx: Math.cos(a) * 700 * dir, vy: Math.sin(a) * 700, life: 0, max: 0.7 });
 }
 
@@ -368,6 +369,79 @@ function shuffle(arr) {
 
 // ---------- Sound ----------
 let audio = null;
+let masterGain = null;
+let soundMode = 'normal';
+try { const saved = localStorage.getItem('planet-pals-sound'); if (['normal', 'soft', 'off'].includes(saved)) soundMode = saved; } catch (_) {}
+function audioOutput() {
+  if (!masterGain) {
+    masterGain = audio.createGain();
+    masterGain.gain.setValueAtTime(soundMode === 'off' ? 0 : soundMode === 'soft' ? .3 : 1, audio.currentTime);
+    masterGain.connect(audio.destination);
+  }
+  return masterGain;
+}
+function setSoundMode(mode) {
+  if (!['normal', 'soft', 'off'].includes(mode)) return;
+  soundMode = mode;
+  try { localStorage.setItem('planet-pals-sound', mode); } catch (_) {}
+  if (audio) {
+    const gain = audioOutput().gain, now = audio.currentTime;
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(gain.value, now);
+    gain.linearRampToValueAtTime(mode === 'off' ? 0 : mode === 'soft' ? .3 : 1, now + .025);
+  }
+}
+function soundControl() { return { x: 132, y: HOME.y, r: 30 }; }
+function drawSoundControl() {
+  const { x, y, r } = soundControl();
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = '#23334e'; circle(0, 0, r);
+  ctx.strokeStyle = '#a7d9ef'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#d9f5ff'; ctx.beginPath();
+  ctx.moveTo(-17, -6); ctx.lineTo(-10, -6); ctx.lineTo(0, -15); ctx.lineTo(0, 15); ctx.lineTo(-10, 6); ctx.lineTo(-17, 6); ctx.closePath(); ctx.fill();
+  ctx.lineWidth = 3; ctx.lineCap = 'round';
+  if (soundMode === 'off') { ctx.beginPath(); ctx.moveTo(8, -7); ctx.lineTo(20, 7); ctx.moveTo(20, -7); ctx.lineTo(8, 7); ctx.stroke(); }
+  else for (let i = 0; i < (soundMode === 'normal' ? 2 : 1); i++) { ctx.beginPath(); ctx.arc(0, 0, 12 + i * 8, -.65, .65); ctx.stroke(); }
+  ctx.font = '600 12px system-ui'; ctx.textAlign = 'center'; ctx.fillText(soundMode === 'normal' ? 'Sound' : soundMode === 'soft' ? 'Soft' : 'Off', 0, 45);
+  ctx.restore();
+}
+// Short effects share lifecycle ownership, including notes scheduled in the future.
+const transientSounds = new Set();
+function ownTransient(o, g, startsAt, gainAt) {
+  let stopped = false;
+  const sound = { stop() {
+    if (stopped) return;
+    stopped = true;
+    transientSounds.delete(sound);
+    const now = audio.currentTime;
+    if (now < startsAt) {
+      g.gain.cancelScheduledValues(now);
+      g.gain.setValueAtTime(0, now);
+      o.stop(now);
+      return;
+    }
+    // Preserve the current envelope value before a short, click-free release.
+    if (g.gain.cancelAndHoldAtTime) g.gain.cancelAndHoldAtTime(now);
+    else {
+      g.gain.cancelScheduledValues(now);
+      g.gain.setValueAtTime(gainAt(now), now);
+    }
+    g.gain.linearRampToValueAtTime(0, now + .015);
+    o.stop(now + .02);
+  } };
+  o.onended = () => {
+    stopped = true;
+    transientSounds.delete(sound);
+    o.disconnect();
+    g.disconnect();
+  };
+  if (transientSounds.size >= 48) transientSounds.values().next().value.stop();
+  transientSounds.add(sound);
+  return sound;
+}
+function stopTransientSounds() {
+  for (const sound of [...transientSounds]) sound.stop();
+}
 const SCALE = [523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1174.66, 1318.51, 1567.98];
 
 function unlockAudio() {
@@ -375,7 +449,9 @@ function unlockAudio() {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (AC) audio = new AC();
   }
-  if (audio && audio.state === 'suspended') audio.resume();
+  if (audio && (audio.state === 'suspended' || audio.state === 'interrupted')) {
+    try { Promise.resolve(audio.resume()).catch(() => {}); } catch (_) {}
+  }
 }
 
 function tone(freq, when = 0, dur = 0.5, vol = 0.2, type = 'sine', endFreq = null) {
@@ -389,10 +465,14 @@ function tone(freq, when = 0, dur = 0.5, vol = 0.2, type = 'sine', endFreq = nul
   g.gain.setValueAtTime(0.0001, t0);
   g.gain.exponentialRampToValueAtTime(vol, t0 + 0.02);
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  o.connect(g).connect(audio.destination);
+  o.connect(g).connect(audioOutput());
   o.start(t0);
   o.stop(t0 + dur + 0.05);
-  return { stop() { o.stop(); } };
+  return ownTransient(o, g, t0, now => {
+    const age = Math.max(0, now - t0);
+    if (age < .02) return .0001 * Math.pow(vol / .0001, age / .02);
+    return vol * Math.pow(.0001 / vol, Math.min(1, (age - .02) / (dur - .02)));
+  });
 }
 
 const sfx = {
@@ -409,9 +489,10 @@ const sfx = {
     o.frequency.exponentialRampToValueAtTime(45, t0 + 0.35);
     g.gain.setValueAtTime(0.6, t0);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
-    o.connect(g).connect(audio.destination);
+    o.connect(g).connect(audioOutput());
     o.start(t0);
     o.stop(t0 + 0.55);
+    return ownTransient(o, g, t0, now => .6 * Math.pow(.0001 / .6, Math.min(1, Math.max(0, now - t0) / .5)));
   },
 };
 
@@ -436,7 +517,7 @@ function startSustain(freq) {
   g2.gain.value = 0.25;
   o.connect(g);
   o2.connect(g2).connect(g);
-  g.connect(audio.destination);
+  g.connect(audioOutput());
   o.start(t0);
   o2.start(t0);
   lfo.start(t0);
@@ -456,22 +537,43 @@ function startSustain(freq) {
 // speechSynthesis is silent on the kids' devices. Keys map to voice/<key>.m4a.
 const clips = new Map();
 
+const readyClips = new Map();
+const clipRetryAt = new Map();
 function loadClip(key) {
+  if (!audio) return Promise.resolve(null);
   if (!clips.has(key)) {
-    clips.set(
-      key,
-      fetch(`voice/${key}.m4a`)
-        .then((r) => r.arrayBuffer())
-        .then((buf) => audio.decodeAudioData(buf))
-        .catch(() => null)
-    );
+    if (Date.now() < (clipRetryAt.get(key) || 0)) return Promise.resolve(null);
+    clips.set(key, fetch(`voice/${key}.m4a`)
+      .then(r => { if (!r.ok) throw new Error('Voice HTTP ' + r.status); return r.arrayBuffer(); })
+      .then(buf => audio.decodeAudioData(buf))
+      .then(buffer => { readyClips.set(key, buffer); clipRetryAt.delete(key); return buffer; })
+      .catch(() => { clips.delete(key); clipRetryAt.set(key, Date.now() + 5000); return null; }));
   }
   return clips.get(key);
 }
-
 function preloadVoice() {
-  ['tap', 'sun', 'expert', 'yay', 'good-job', 'hooray', 'Jettson', 'Langston'].forEach(loadClip);
-  for (const p of PLANETS) ['name', 'fact', 'find', 'found', 'thats'].forEach((k) => loadClip(`${k}-${p.name}`));
+  if (!audio) return;
+  ['reaction-whoa', 'reaction-whee', 'reaction-giggle', 'tap', 'sun', 'expert', 'yay', 'good-job', 'hooray', 'Jettson', 'Langston'].forEach(loadClip);
+  for (const p of PLANETS) ['name', 'fact', 'find', 'found', 'thats'].forEach(k => loadClip(`${k}-${p.name}`));
+}
+// A reaction is immediate or skipped, never queued behind a download.
+let reactionCurrent = null;
+let reactionGeneration = 0;
+function stopReaction() {
+  reactionGeneration++;
+  if (reactionCurrent) { reactionCurrent.stop(); reactionCurrent.disconnect(); }
+  reactionCurrent = null;
+}
+function playReaction(key) {
+  const buffer = readyClips.get(key);
+  if (!audio || !buffer || reactionCurrent) return false;
+  const source = audio.createBufferSource();
+  source.buffer = buffer; source.connect(audioOutput());
+  reactionCurrent = source;
+  const generation = ++reactionGeneration;
+  source.onended = () => { source.disconnect(); if (generation === reactionGeneration) reactionCurrent = null; };
+  source.start();
+  return true;
 }
 
 let sayGen = 0;
@@ -496,8 +598,9 @@ async function say(...keys) {
     await new Promise((resolve) => {
       current = audio.createBufferSource();
       current.buffer = buffer;
-      current.connect(audio.destination);
-      current.onended = resolve;
+      current.connect(audioOutput());
+      const source = current;
+      current.onended = () => { source.disconnect?.(); resolve(); };
       // Sample decoded speech at 30 Hz; faces follow actual sound, including pauses.
       const samples = buffer.getChannelData(0);
       const step = Math.max(1, Math.floor(buffer.sampleRate / 30));
@@ -552,6 +655,7 @@ function drawWord() {
 
 // ---------- Layout ----------
 function resize() {
+  stopTransientSounds();
   stopSilly();
   stopSong();
   releaseAllHolds();
@@ -588,7 +692,7 @@ function layoutMenu() {
   state.menuButtons = [
     { mode: 'explore', label: 'Explore', x: W * 0.2, y: H * 0.57, r },
     { mode: 'find', label: 'Find it!', x: W * 0.5, y: H * 0.57, r },
-    { mode: 'silly', label: 'Silly!', x: W * 0.8, y: H * 0.57, r },
+    { mode: 'silly', label: 'Playground', x: W * 0.8, y: H * 0.57, r },
   ];
 }
 
@@ -649,6 +753,7 @@ function layoutFind() {
 
 // ---------- Modes ----------
 function setMode(mode) {
+  stopTransientSounds();
   stopSilly();
   state.silly = null;
   stopSong();
@@ -667,7 +772,7 @@ function setMode(mode) {
     layoutExplore();
     if (state.talk) say('tap');
   } else if (mode === 'silly') {
-    state.silly = { count: 0, streak: 0, lastTap: -99, effect: 0, sounds: [], touches: new Map(), tickling: false, laughAt: 0, spinAt: -99, spins: 0, surprise: 0, note: 0, accessoryUntil: -99, tickleUntil: -99, angle: 0, velocity: 0, dragId: null, friend: null };
+    state.silly = { count: 0, streak: 0, lastTap: -99, effect: 0, sounds: [], touches: new Map(), tickling: false, laughAt: 0, spinAt: -99, spins: 0, surprise: 0, note: 0, accessoryUntil: -99, tickleUntil: -99, featherAt: -99, angle: 0, velocity: 0, dragId: null, friend: null, spinSpeed: 0, spinBand: 0, reactionAt: -99, reactionVisualAt: -99, spinActiveAt: -99, coastUntil: -99, bubbles: [] };
     layoutSilly();
   } else if (mode === 'find') {
     state.find = null;
@@ -678,19 +783,33 @@ function setMode(mode) {
 }
 
 function ripple(x, y, color) {
+  if (state.ripples.length >= 24) state.ripples.shift();
   state.ripples.push({ x, y, color, life: 0, max: 0.9 });
 }
 
-// ---------- Silly Sun: musical friend, finger spins, and two toy props ----------
+// ---------- Playground: musical friends, expressive spins, and three toys ----------
 function stopSillySounds() {
   if (!state.silly) return;
   for (const sound of state.silly.sounds) sound?.stop();
   state.silly.sounds = [];
 }
 
+// A new direct action owns the reaction; an old feather cannot steal its audio.
+function cancelSillyFeather() {
+  const silly = state.silly;
+  stopReaction();
+  silly.featherAt = silly.tickleUntil = -99;
+  silly.tickling = false;
+  stopSillySounds();
+}
+
 function stopSilly() {
   if (!state.silly) return;
   stopSillySounds();
+  stopReaction();
+  state.silly.spinSpeed = state.silly.spinBand = 0;
+  state.silly.coastUntil = state.silly.spinActiveAt = -99;
+  state.silly.bubbles = [];
   state.silly.touches.clear();
   state.silly.tickling = false;
   state.silly.streak = 0;
@@ -698,7 +817,7 @@ function stopSilly() {
   state.silly.spinAt = -99;
   state.silly.angle = state.silly.velocity = 0;
   state.silly.dragId = null;
-  state.silly.tickleUntil = -99;
+  state.silly.tickleUntil = state.silly.featherAt = -99;
   state.silly.accessoryUntil = -99;
 }
 
@@ -715,10 +834,24 @@ function sillyTap(x, y, pointerId) {
   }
   const toy = sillyToys().find(toy => dist(x, y, toy.x, toy.y) <= toy.r + 10);
   if (toy) {
-    if (toy.kind === 'feather') {
+    cancelSillyFeather();
+    silly.angle = sillyRotation();
+    silly.spinAt = -99;
+    silly.velocity = 0;
+    silly.touches.clear();
+    silly.dragId = null;
+    silly.bubbles = [];
+    silly.accessoryUntil = -99;
+    silly.spinSpeed = silly.spinBand = 0;
+    silly.coastUntil = silly.spinActiveAt = -99;
+    if (toy.kind === 'bubbles') {
+      makeBubbles();
+      state.word = null;
+    } else if (toy.kind === 'feather') {
+      silly.featherAt = state.time;
       silly.tickleUntil = state.time + 2.2;
-      silly.laughAt = state.time;
-      showWord('Hee hee hee!', '#ffe497');
+      silly.laughAt = state.time + .35;
+      state.word = null;
       updateSilly(0);
     } else {
       silly.surprise = silly.spins++ % 3;
@@ -732,12 +865,28 @@ function sillyTap(x, y, pointerId) {
     return;
   }
   if (dist(x, y, sun.x, sun.y) > sun.r * 1.4) {
+    const bubble = silly.bubbles.find(b => { const pos = bubblePosition(b); return dist(x, y, pos.x, pos.y) <= b.r + 12; });
+    if (bubble) {
+      silly.bubbles = silly.bubbles.filter(b => b !== bubble);
+      const pos = bubblePosition(bubble);
+      tone(SCALE[bubble.note], 0, .35, .12);
+      burst(pos.x, pos.y, '#afefff', 8);
+      return;
+    }
     shootingStar(x, y); return;
   }
+  const touch = { x, y, startX: x, startY: y, at: null, dragging: false, lastMove: -99, centerSwipe: dist(x, y, sun.x, sun.y) < sun.r * .25 };
+  if (silly.touches.get(silly.dragId)?.dragging) {
+    silly.touches.set(pointerId, touch);
+    return;
+  }
+  cancelSillyFeather();
+  silly.spinSpeed = silly.spinBand = 0;
+  silly.coastUntil = silly.spinActiveAt = -99;
   const streak = state.time - silly.lastTap < 1.2 ? silly.streak + 1 : 1;
   // Replace the last sound so rapid or multi-finger mashing stays bounded.
   stopSillySounds();
-  silly.touches.set(pointerId, { x, y, startX: x, startY: y, at: null, dragging: false, lastMove: -99 });
+  silly.touches.set(pointerId, touch);
   if (silly.dragId === null) silly.dragId = pointerId;
   silly.streak = streak >= 6 ? 0 : streak;
   silly.lastTap = state.time;
@@ -784,12 +933,18 @@ function sillyDrag(e) {
       silly.spinAt = -99;
       silly.velocity = 0;
       silly.streak = 0;
+      stopSillySounds();
     }
     if (touch.dragging) {
       const before = Math.atan2(touch.y - sun.y, touch.x - sun.x);
       const after = Math.atan2(y - sun.y, x - sun.x);
       // Near the middle, a sideways swipe still gives the Sun a useful turn.
-      const delta = Math.min(dist(x, y, sun.x, sun.y), dist(touch.x, touch.y, sun.x, sun.y)) < sun.r * .25
+      const dx = x - touch.x, dy = y - touch.y;
+      const length2 = dx * dx + dy * dy;
+      const along = length2 ? Math.max(0, Math.min(1,
+        ((sun.x - touch.x) * dx + (sun.y - touch.y) * dy) / length2)) : 0;
+      const crossesCenter = dist(touch.x + along * dx, touch.y + along * dy, sun.x, sun.y) < sun.r * .25;
+      const delta = touch.centerSwipe || crossesCenter
         ? (x - touch.x) / sun.r
         : Math.atan2(Math.sin(after - before), Math.cos(after - before));
       const dt = Math.max(.008, Math.min(.08, touch.at === null ? .016 : (at - touch.at) / 1000));
@@ -807,7 +962,9 @@ function endSillyTouch(e) {
   const touch = silly.touches.get(e.pointerId);
   silly.touches.delete(e.pointerId);
   if (silly.dragId !== e.pointerId) return;
-  const cancelled = e.type === 'pointercancel' || e.type === 'pointerleave';
+  const cancelled = e.type === 'pointercancel' || e.type === 'pointerleave' || e.type === 'lostpointercapture';
+  silly.coastUntil = cancelled ? -99 : state.time + .65;
+  if (cancelled) { stopReaction(); silly.spinSpeed = silly.spinBand = 0; silly.spinActiveAt = -99; }
   if (cancelled || !touch?.dragging || state.time - touch.lastMove > .12) silly.velocity = 0;
   // One finger owns rotation; another resting finger can take over smoothly.
   const next = silly.touches.entries().next().value;
@@ -815,6 +972,7 @@ function endSillyTouch(e) {
   if (next) {
     const point = next[1];
     point.startX = point.x; point.startY = point.y; point.at = null; point.dragging = false;
+    point.centerSwipe = dist(point.x, point.y, state.sun.x, state.sun.y) < state.sun.r * .25;
     silly.velocity = 0;
   }
 }
@@ -828,18 +986,47 @@ function updateSilly(dt) {
     silly.angle += silly.velocity * (1 - decay) / 3;
     silly.velocity *= decay;
   }
-  const tickling = state.time < silly.tickleUntil;
+  const touch = silly.touches.get(silly.dragId);
+  const moving = touch?.dragging && state.time - touch.lastMove < .12;
+  const autoAge = state.time - silly.spinAt;
+  const autoSpeed = autoAge >= 0 && autoAge < 1.1 ? TAU * 6 * (autoAge / 1.1) * (1 - autoAge / 1.1) / 1.1 : 0;
+  const speed = moving || (silly.dragId === null && state.time < silly.coastUntil) ? Math.abs(silly.velocity) : autoSpeed;
+  silly.spinSpeed += (speed - silly.spinSpeed) * (1 - Math.exp(-dt * 12));
+  const previousBand = silly.spinBand;
+  silly.spinBand = silly.spinSpeed < (previousBand ? .45 : .8) ? 0 : silly.spinSpeed > (previousBand === 2 ? 2.8 : 3.8) ? 2 : 1;
+  // Give the speed estimate time to settle: a fast swipe must not say 'Whoa'
+  // on its first frame simply because smoothing starts at zero. A short coast
+  // may complete this deliberate onset, but resting fingers cannot do so.
+  if (speed > .7) {
+    if (silly.spinActiveAt === -99) silly.spinActiveAt = state.time - dt;
+  } else silly.spinActiveAt = -99;
+  if (silly.spinActiveAt !== -99 && state.time - silly.spinActiveAt >= .10 && silly.spinBand) {
+    const fast = silly.spinBand === 2;
+    if (state.time - silly.reactionVisualAt >= 1.4) {
+      showWord(fast ? 'Wheee!' : 'Whoa!', '#ffe497');
+      silly.reactionVisualAt = state.time;
+    }
+    if (state.time - silly.reactionAt >= 1.4 && playReaction(fast ? 'reaction-whee' : 'reaction-whoa')) silly.reactionAt = state.time;
+  }
+  const featherAge = state.time - silly.featherAt;
+  const tickling = featherAge >= .35 && featherAge < 1.85;
   if (!tickling) {
-    if (silly.tickling) stopSillySounds();
+    if (silly.tickling) { stopSillySounds(); stopReaction(); }
     silly.tickling = false;
     return;
   }
+  if (!silly.tickling) { showWord('Hee hee hee!', '#ffe497'); playReaction('reaction-giggle'); }
   silly.tickling = true;
   silly.effect = 3;
   silly.lastTap = state.time;
   if (state.time < silly.laughAt) return;
   stopSillySounds();
-  silly.sounds = [0,1,2].map(i => tone(i % 2 ? 640 : 470, i * .12, .14, .1, 'triangle', 260));
+  if (readyClips.has('reaction-giggle')) return;
+  silly.sounds = [0,1,2].flatMap(i => {
+    const pitch = [460, 580, 510][i];
+    return [tone(pitch, i * .12, .12, .085, 'sine', pitch * .72),
+      tone(pitch * 2, i * .12, .095, .025, 'triangle', pitch * 1.5)];
+  });
   silly.laughAt = state.time + .42;
   burst(state.sun.x, state.sun.y - state.sun.r * .6, '#ffb5d0', 5);
 }
@@ -852,7 +1039,29 @@ function sillyRotation() {
 }
 
 function sillyToys() {
-  return ['feather', 'gift'].map((kind, i) => ({ kind, x: W * (.12 + i * .76), y: H * .56, r: Math.min(50, H * .065) }));
+  return [{ kind: 'feather', x: W * .12, y: H * .56 }, { kind: 'gift', x: W * .88, y: H * .56 }, { kind: 'bubbles', x: W * .88, y: H * .3 }].map(toy => ({ ...toy, r: Math.min(50, H * .065) }));
+}
+
+// Bubbles stay in side lanes, outside the hero grab area and all controls.
+function makeBubbles() {
+  const r = Math.min(34, H * .044);
+  state.silly.bubbles = [0, 1, 2, 3].map((i) => ({
+    x: W * (i < 2 ? .12 : [.82, .94][i - 2]), y: H * (i < 2 ? [.25, .38][i] : .73),
+    r, note: i * 2, phase: i * 1.7, at: state.time
+  }));
+}
+function bubblePosition(b) {
+  return { x: b.x + Math.sin((state.time - b.at) * .65 + b.phase) * 5,
+    y: b.y + Math.sin((state.time - b.at) * .5 + b.phase) * 4 };
+}
+function drawBubbles() {
+  for (const b of state.silly.bubbles) {
+    const { x, y } = bubblePosition(b);
+    ctx.fillStyle = 'rgba(139,221,255,.12)'; circle(x, y, b.r);
+    ctx.strokeStyle = '#98dbe8'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.strokeStyle = '#f7dbff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, b.r * .82, 3.6, 4.8); ctx.stroke();
+    ctx.fillStyle = '#f3fbff'; circle(x - b.r * .38, y - b.r * .4, b.r * .12);
+  }
 }
 
 function sillyFriends() {
@@ -893,11 +1102,16 @@ function drawFeather(x, y, size, tilt = -.5) {
 
 function drawSillyToys() {
   for (const toy of sillyToys()) {
-    const active = toy.kind === 'feather' ? state.silly.tickling : state.time < state.silly.accessoryUntil;
+    const active = toy.kind === 'feather' ? state.time < state.silly.tickleUntil : toy.kind === 'bubbles' ? state.silly.bubbles.length > 0 : state.time < state.silly.accessoryUntil;
     ctx.fillStyle = active ? '#476b83' : '#28364f'; circle(toy.x, toy.y, toy.r);
     ctx.strokeStyle = active ? '#fff0a3' : '#7286ad'; ctx.lineWidth = 3; ctx.stroke();
     if (toy.kind === 'feather') drawFeather(toy.x, toy.y, toy.r * 1.1);
-    else {
+    else if (toy.kind === 'bubbles') {
+      ctx.strokeStyle = '#9de7e8'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(toy.x - toy.r * .3, toy.y + toy.r * .52); ctx.lineTo(toy.x, toy.y); ctx.stroke();
+      ctx.lineWidth = 4; ctx.beginPath(); ctx.ellipse(toy.x + toy.r * .16, toy.y - toy.r * .2, toy.r * .3, toy.r * .34, .4, 0, TAU); ctx.stroke();
+      ctx.fillStyle = '#d3f4ff'; circle(toy.x - toy.r * .4, toy.y - toy.r * .4, toy.r * .12);
+    } else {
       const r = toy.r;
       ctx.fillStyle = '#ef8bb8'; ctx.fillRect(toy.x - r * .5, toy.y - r * .25, r, r * .8);
       ctx.fillStyle = '#ffd96a'; ctx.fillRect(toy.x - r * .09, toy.y - r * .3, r * .18, r * .85);
@@ -906,21 +1120,31 @@ function drawSillyToys() {
       for (const side of [-1, 1]) { ctx.beginPath(); ctx.ellipse(toy.x + side * r * .2, toy.y - r * .46, r * .2, r * .12, side * .5, 0, TAU); ctx.stroke(); }
     }
     ctx.font = '700 18px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff0bc';
-    ctx.fillText(toy.kind === 'feather' ? 'Tickle' : 'Surprise', toy.x, toy.y + toy.r + 19);
+    ctx.fillText(toy.kind === 'feather' ? 'Tickle' : toy.kind === 'bubbles' ? 'Bubbles' : 'Surprise', toy.x, toy.y + toy.r + 19);
   }
 }
 
 function drawSilly() {
   const sun = state.sun, silly = state.silly;
+  drawBubbles();
   const age = state.time - silly.lastTap;
   const active = age < 1.2;
   const wobble = active ? Math.sin((silly.tickling ? state.time : age) * 24) * .1 * Math.exp(-age * 3) : 0;
   const friend = silly.friend;
-  const r = sun.r * (friend?.ring ? .78 : 1) * (active ? 1 + .07 * Math.sin((silly.tickling ? state.time : age) * 18) * Math.exp(-age * 3) : 1);
+  // Fit the full rotating silhouette (rings, rays and hats) between name and caption.
+  // The generous, fixed grab target remains unchanged while the character performs.
+  const extent = Math.max(1.32, friend ? (friend.ring ? friend.ring.radius + friend.ring.width / 2 : 1) : 1.36);
+  const reach = Math.max(40, Math.min(sun.y - (safeTop + H * .15 + Math.min(64, W * .065) / 2 + 16), H * .79 - Math.min(26, W * .03) / 2 - 16 - sun.y));
+  const r = Math.min(sun.r, reach / (extent * 1.07)) * (active ? 1 + .07 * Math.sin((silly.tickling ? state.time : age) * 18) * Math.exp(-age * 3) : 1);
   const dragging = silly.touches.get(silly.dragId)?.dragging;
   const surprise = state.time < silly.accessoryUntil;
+  if (silly.spinBand) {
+    ctx.save(); ctx.strokeStyle = 'rgba(178,224,255,.35)'; ctx.lineWidth = 3;
+    for (let i = 0; i < 2; i++) { ctx.beginPath(); ctx.arc(sun.x, sun.y, r * 1.17, sillyRotation() + i * Math.PI, sillyRotation() + i * Math.PI + .45); ctx.stroke(); }
+    ctx.restore();
+  }
   ctx.save(); ctx.translate(sun.x, sun.y); ctx.rotate((dragging ? 0 : wobble) + sillyRotation());
-  const mouth = active ? .5 + .3 * Math.sin((silly.tickling ? state.time : age) * 20) : 0;
+  const mouth = silly.spinBand ? (silly.spinBand === 2 ? .8 : .45) + .12 * Math.sin(state.time * 12) : active ? .5 + .3 * Math.sin((silly.tickling ? state.time : age) * 20) : 0;
   if (friend) drawPlanet(friend, 0, 0, r, { happy: true, blink: active && silly.effect === 3, mouth });
   else { smallSun(0, 0, r); drawFace(0, 0, r * .9, active && silly.effect === 3, 0, true, mouth); }
   ctx.save(); ctx.rotate(friend?.faceTilt || 0);
@@ -965,10 +1189,21 @@ function drawSilly() {
     }
     ctx.globalAlpha = 1;
   }
-  if (!state.word || state.time - state.word.at > 3.5) sticker((friend?.name || 'Silly Sun') + '!', W / 2, safeTop + H * .15, Math.min(64, W * .065), '#ffd66d');
+  sticker(friend?.name || 'Sun', W / 2, safeTop + H * .15, Math.min(64, W * .065), friend?.glow || '#ffd66d');
   ctx.font = `700 ${Math.min(26, W * .03)}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff0bc';
-  ctx.fillText(silly.tickling ? 'Tickle tickle!' : 'Tap for music • Drag to spin!', W / 2, H * .79);
-  if (silly.tickling) drawFeather(sun.x + sun.r * .6 + Math.sin(state.time * 18) * 20, sun.y + sun.r * .05, sun.r * .65, -.6 + Math.sin(state.time * 15) * .25);
+  const reaction = state.word && state.time - state.word.at < 1.4 ? state.word.text : '';
+  ctx.fillText(reaction, W / 2, H * .79);
+  // Travel from the actual toy to the cheek, rub on contact, then return.
+  const featherAge = state.time - silly.featherAt;
+  if (featherAge >= 0 && featherAge < 2.2) {
+    const toy = sillyToys()[0];
+    const travel = featherAge < .35 ? featherAge / .35 : featherAge > 1.85 ? (2.2 - featherAge) / .35 : 1;
+    const k = travel * travel * (3 - 2 * travel);
+    const rub = silly.tickling ? Math.sin((featherAge - .35) * 18) : 0;
+    const tx = sun.x - r * .63 + rub * 12, ty = sun.y + r * .14;
+    drawFeather(toy.x + (tx - toy.x) * k, toy.y + (ty - toy.y) * k,
+      toy.r * 1.1 + (sun.r * .65 - toy.r * 1.1) * k, .5 + rub * .2);
+  }
   drawSillyToys();
   drawSillyFriends();
 }
@@ -1210,12 +1445,17 @@ canvas.addEventListener('pointerdown', (e) => {
   unlockAudio();
   preloadVoice();
   const { clientX: x, clientY: y } = e;
+  const sound = soundControl();
+  if (dist(x, y, sound.x, sound.y) <= sound.r + 8) {
+    setSoundMode({ normal: 'soft', soft: 'off', off: 'normal' }[soundMode]);
+    return;
+  }
 
   if (state.mode === 'menu') {
     const btn = state.menuButtons.find((b) => dist(x, y, b.x, b.y) <= b.r);
     if (btn) {
-      sfx.fanfare();
       setMode(btn.mode);
+      sfx.fanfare();
     } else {
       sfx.sparkle();
       shootingStar(x, y);
@@ -1535,7 +1775,16 @@ function drawEmojiButton(btn, emoji) {
 }
 
 function drawHome() {
-  drawEmojiButton(HOME, '🏠');
+  const { x, y, r } = HOME;
+  ctx.fillStyle = '#28364f'; circle(x, y, r);
+  ctx.strokeStyle = '#7286ad'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.strokeStyle = '#fff0bc'; ctx.lineWidth = r * .12;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath(); ctx.moveTo(x - r * .5, y - r * .02);
+  ctx.lineTo(x, y - r * .48); ctx.lineTo(x + r * .5, y - r * .02);
+  ctx.moveTo(x - r * .35, y - r * .1); ctx.lineTo(x - r * .35, y + r * .4);
+  ctx.lineTo(x + r * .35, y + r * .4); ctx.lineTo(x + r * .35, y - r * .1);
+  ctx.moveTo(x, y + r * .4); ctx.lineTo(x, y + r * .12); ctx.stroke();
 }
 
 function drawFindHud() {
@@ -1584,6 +1833,8 @@ function drawMenu() {
   ctx.fillText('🔍', find.x + find.r * 0.38, find.y - find.r * 0.3);
   smallSun(silly.x, silly.y, silly.r * .56);
   drawFace(silly.x, silly.y, silly.r * .5, false, 0, true, .6);
+  drawPlanet(PLANETS[2], silly.x - silly.r * .57, silly.y + silly.r * .45, silly.r * .26, { happy: true });
+  drawPlanet(PLANETS[5], silly.x + silly.r * .52, silly.y + silly.r * .48, silly.r * .23, { happy: true });
 }
 
 function drawRipples() {
@@ -1622,7 +1873,6 @@ function draw() {
   } else if (state.mode === 'silly') {
     drawRipples();
     drawSilly();
-    drawWord();
     drawHome();
   } else {
     if (state.mode === 'explore' && !state.spotlight) {
@@ -1644,6 +1894,7 @@ function draw() {
   }
   drawParticles();
   if (shake < 0.35) ctx.restore();
+  drawSoundControl();
 }
 
 // ---------- Character performance and Talk stage ----------
@@ -1851,6 +2102,7 @@ function frame(now) {
 }
 
 function quietGame() {
+  stopTransientSounds();
   stopSilly();
   stopSong();
   releaseAllHolds();

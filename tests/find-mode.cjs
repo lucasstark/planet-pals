@@ -19,6 +19,69 @@ function game() {
   run(`const originalSay = say; const responses = []; say = (...keys) => new Promise(resolve => responses.push({keys, resolve})); setMode('find');`);
   return { run, timers };
 }
+
+// Exercise the real tone/ownership code without requiring an audio device.
+function mockAudio(run) {
+  run(`const oscillators=[], gains=[];
+    const parameter=()=>({events:[],
+      setValueAtTime(...args){this.events.push(['set',...args]);},
+      exponentialRampToValueAtTime(...args){this.events.push(['exp',...args]);},
+      linearRampToValueAtTime(...args){this.events.push(['linear',...args]);},
+      cancelScheduledValues(...args){this.events.push(['cancel',...args]);}});
+    audio={currentTime:10,state:'running',destination:{},
+      createOscillator(){const o={frequency:parameter(),stops:[],starts:[],disconnected:false,
+        connect(node){this.output=node;return node;},start(at){this.starts.push(at);},stop(at){this.stops.push(at);},
+        disconnect(){this.disconnected=true;}};oscillators.push(o);return o;},
+      createGain(){const g={gain:parameter(),disconnected:false,
+        connect(node){return node;},disconnect(){this.disconnected=true;}};gains.push(g);return g;}};`);
+}
+
+test('transient audio cancels future notes, releases active envelopes, and stops idempotently', () => {
+  const { run } = game();
+  mockAudio(run);
+  run('const future=tone(440,.5); future.stop(); future.stop();');
+  assert.equal(run('oscillators[0].stops.length'), 2, 'scheduled natural end plus one cancellation');
+  assert.equal(run('oscillators[0].stops.at(-1)'), 10);
+  assert.equal(run("JSON.stringify(gains[0].gain.events.slice(-2))"), JSON.stringify([['cancel',10],['set',0,10]]));
+  assert.equal(run('transientSounds.size'), 0);
+  run('const active=tone(440); audio.currentTime+=.1; active.stop(); active.stop();');
+  assert.equal(run('oscillators[1].stops.length'), 2);
+  assert.ok(Math.abs(run('oscillators[1].stops.at(-1)')-10.12)<1e-8);
+  assert.equal(run("oscillators[1].output.gain.events.at(-1)[0]"), 'linear');
+  assert.ok(run("oscillators[1].output.gain.events.at(-2)[1]")>0, 'fallback preserves the current envelope before fading');
+});
+
+test('transient audio removes completed nodes and bounds overlapping effects', () => {
+  const { run } = game();
+  mockAudio(run);
+  run('const completed=tone(440); oscillators[0].onended(); completed.stop();');
+  assert.equal(run('transientSounds.size'), 0);
+  assert.equal(run('oscillators[0].disconnected && gains[0].disconnected'), true);
+  assert.equal(run('oscillators[0].stops.length'), 1, 'ending naturally makes subsequent stop harmless');
+  run('for(let i=0;i<49;i++)tone(440,.5);');
+  assert.equal(run('transientSounds.size'), 48);
+  assert.equal(run('oscillators[1].stops.at(-1)'), 10, 'oldest future note is cancelled at the cap');
+  run('stopTransientSounds(); stopTransientSounds();');
+  assert.equal(run('transientSounds.size'), 0);
+  assert.equal(run('oscillators.slice(1).every(o=>o.stops.length===2)'), true);
+});
+
+test('navigation, resize and background cleanup stop transient audio while menu entry preserves its fanfare', () => {
+  const { run } = game();
+  mockAudio(run);
+  for (const cleanup of ["setMode('menu')", 'resize()', 'quietGame()']) {
+    run(`tone(440,.5); sfx.thump(); ${cleanup};`);
+    assert.equal(run('transientSounds.size'), 0, cleanup);
+    assert.equal(run('oscillators.at(-2).stops.at(-1)'), 10, 'pending note cancelled');
+    assert.ok(Math.abs(run('oscillators.at(-1).stops.at(-1)')-10.02)<1e-8, 'drum releases');
+  }
+  run(`setMode('menu'); preloadVoice=()=>{};
+    const button=state.menuButtons.find(b=>b.mode==='silly');
+    canvasListeners.pointerdown({preventDefault(){},clientX:button.x,clientY:button.y,pointerId:1});`);
+  assert.equal(run('state.mode'), 'silly');
+  assert.equal(run('transientSounds.size'), 5, 'entry fanfare is created after mode cleanup');
+  assert.equal(run('oscillators.slice(-5).every(o=>o.stops.length===1)'), true);
+});
 const tapCorrect = `const b = state.bodies.find(b => b.planet === state.find.target); findTap(b.x, b.y);`;
 test('five-star challenges, ten-answer parade, score reset and guarded navigation', () => {
   const { run, timers } = game();
@@ -92,7 +155,8 @@ test('Talk stage keeps every friend selectable and survives resize and mode chan
 test('speech performance follows playback and interrupted completion cannot clear a newer face', async () => {
   const { run } = game();
   run(`const sources = [];
-    audio = { currentTime: 1, destination: {}, createBufferSource() {
+    audio = { currentTime: 1, destination: {},
+      createGain() { return { gain: { setValueAtTime() {} }, connect() {} }; }, createBufferSource() {
       const src = { connect() {}, start() {}, stop() { this.onended(); } }; sources.push(src); return src;
     }};
     const buffer = { sampleRate: 30, getChannelData: () => new Float32Array([.1,.05,0,.08]) };
@@ -216,13 +280,13 @@ test('Silly feather tickles on a tap, holding the character does not, and cleanu
     sillyTap(state.sun.x,state.sun.y,1); state.time+=3; update(.016);`);
   assert.equal(run('state.silly.tickling'), false, 'holding the character leaves dragging available');
   run(`endHold({pointerId:1}); const feather=sillyToys()[0]; sillyTap(feather.x,feather.y,2); endHold({pointerId:2}); draw();`);
-  assert.equal(run('state.silly.tickling'), true, 'one feather tap starts a timed laugh');
+  assert.equal(run('state.silly.tickling'), false, 'the feather approaches before laughter begins');
   assert.equal(run('state.silly.touches.size'), 0, 'toy taps do not grab the character');
   run('state.time+=.5; update(.016); draw();');
-  assert.equal(run('state.silly.sounds.length'), 3);
-  run('sillyTap(feather.x,feather.y,3); state.time+=2; update(.016);');
+  assert.ok(run('state.silly.sounds.length') > 0, 'contact produces laughter');
+  run('sillyTap(feather.x,feather.y,3); state.time+=1; update(.016);');
   assert.equal(run('state.silly.tickling'), true, 'another tap refreshes the laugh');
-  run('state.time+=.3; update(.016);');
+  run('state.time+=1.3; update(.016);');
   assert.equal(run('state.silly.tickling'), false);
   assert.equal(run('sounds.every(sound=>sound.stopped)'), true);
   for (const cleanup of ['quietGame()', 'resize()', "setMode('menu')"]) {
@@ -296,11 +360,103 @@ test('every planet and Sun can be selected, tickled, dressed up and resized', ()
   for (let i=0;i<9;i++) {
     run(`{ const friend=sillyFriends()[${i}]; sillyTap(friend.x,friend.y,1); }`);
     assert.equal(run('state.silly.friend?.name || "Sun"'), ['Sun','Mercury','Venus','Earth','Mars','Jupiter','Saturn','Uranus','Neptune'][i]);
-    run('const feather'+i+'=sillyToys()[0]; sillyTap(feather'+i+'.x,feather'+i+'.y,2); draw();');
+    run('const feather'+i+'=sillyToys()[0]; sillyTap(feather'+i+'.x,feather'+i+'.y,2); state.time+=.4; update(.016); draw();');
     assert.equal(run('state.silly.tickling'), true);
     run(`{ const gift=sillyToys()[1]; sillyTap(gift.x,gift.y,3); draw(); } resize(); draw();`);
     assert.equal(run('state.silly.tickling'), false);
     assert.equal(run('state.silly.touches.size'), 0);
     assert.equal(run('state.silly.friend?.name || "Sun"'), ['Sun','Mercury','Venus','Earth','Mars','Jupiter','Saturn','Uranus','Neptune'][i]);
+  }
+});
+
+test('center-origin swipes keep their mapping beyond the center zone and transfer ownership smoothly', () => {
+  const { run } = game();
+  run(`setMode('silly'); const cx=state.sun.x, cy=state.sun.y, r=state.sun.r;
+    sillyTap(cx,cy,1);
+    sillyDrag({clientX:cx+r*.4,clientY:cy,pointerId:1,timeStamp:16});
+    const firstAngle=sillyRotation();
+    sillyDrag({clientX:cx+r*.8,clientY:cy,pointerId:1,timeStamp:32});`);
+  assert.ok(Math.abs(run('sillyRotation()-firstAngle')-.4)<1e-8, 'horizontal motion still rotates outside the initial center zone');
+  run(`sillyTap(cx,cy,2); endSillyTouch({pointerId:1,type:'pointerup'});
+    const transferredAngle=sillyRotation();
+    sillyDrag({clientX:cx+r*.4,clientY:cy,pointerId:2,timeStamp:48});`);
+  assert.ok(Math.abs(run('sillyRotation()-transferredAngle')-.4)<1e-8, 'new owner uses its own starting position');
+});
+
+test('outer-origin drags cross the center without an angular half-turn jump', () => {
+  const { run } = game();
+  run(`setMode('silly'); const cx=state.sun.x,cy=state.sun.y,r=state.sun.r;
+    sillyTap(cx+r,cy,1);
+    sillyDrag({clientX:cx+r*.1,clientY:cy,pointerId:1,timeStamp:16});
+    const beforeCenter=sillyRotation();
+    sillyDrag({clientX:cx-r*.1,clientY:cy,pointerId:1,timeStamp:32});`);
+  assert.ok(Math.abs(run('sillyRotation()-beforeCenter')+.2)<1e-8,
+    'a short movement through the center produces a small horizontal turn');
+  run(`quietGame(); sillyTap(cx+r,cy,2);
+    const beforeCrossing=sillyRotation();
+    sillyDrag({clientX:cx-r,clientY:cy,pointerId:2,timeStamp:48});`);
+  assert.ok(Math.abs(run('sillyRotation()-beforeCrossing')+2)<1e-8,
+    'a segment whose endpoints are outside the center zone still uses horizontal mapping when it crosses the center');
+});
+
+test('secondary pointers join an active drag without triggering music or automatic spins', () => {
+  const { run } = game();
+  run(`setMode('silly'); preloadVoice=()=>{}; const cx=state.sun.x,cy=state.sun.y,r=state.sun.r;
+    const down=(x,y,id)=>canvasListeners.pointerdown({preventDefault(){},clientX:x,clientY:y,pointerId:id});
+    const move=(x,y,id)=>canvasListeners.pointermove({preventDefault(){},clientX:x,clientY:y,pointerId:id,timeStamp:16});
+    down(cx+r,cy,1); move(cx,cy+r,1);
+    const countBefore=state.silly.count, angleBefore=sillyRotation();
+    for(let id=2;id<=8;id++) down(cx,cy,id);`);
+  assert.equal(run('state.silly.count'), run('countBefore'));
+  assert.equal(run('state.silly.spins'), 0);
+  assert.equal(run('sillyRotation()'), run('angleBefore'));
+  assert.equal(run('state.silly.touches.size'), 8);
+  run(`canvasListeners.lostpointercapture({pointerId:1});`);
+  assert.equal(run('state.silly.dragId'), 2);
+  assert.equal(run('state.silly.velocity'), 0);
+  run(`for(let id=2;id<=8;id++) canvasListeners.pointercancel({pointerId:id,type:'pointercancel'});`);
+  assert.equal(run('state.silly.touches.size'), 0);
+  assert.equal(run('state.silly.dragId'), null);
+});
+
+test('feather contact controls laughter and hero or gift interrupts the entire feather action', () => {
+  const { run } = game();
+  run(`setMode('silly'); const sounds=[];
+    tone=()=>{const sound={stopped:false,stop(){this.stopped=true;}}; sounds.push(sound); return sound;};
+    const feather=sillyToys()[0],gift=sillyToys()[1];
+    sillyTap(feather.x,feather.y,1); const start=state.time;
+    state.time=start+.34; update(.016);`);
+  assert.equal(run('state.silly.tickling'), false);
+  run('state.time=start+.36; update(.016);');
+  assert.equal(run('state.silly.tickling'), true);
+  run('state.time=start+1.86; update(.016);');
+  assert.equal(run('state.silly.tickling'), false, 'laughter stops as the feather withdraws');
+  assert.equal(run('sounds.every(sound=>sound.stopped)'), true);
+  for (const interaction of ['sillyTap(state.sun.x,state.sun.y,2)', 'sillyTap(gift.x,gift.y,2)']) {
+    run(`sillyTap(feather.x,feather.y,1); state.time+=.4; update(.016);
+      const oldSounds${interaction.includes('gift') ? 'Gift' : 'Hero'}=state.silly.sounds.slice(); ${interaction};`);
+    assert.equal(run('state.silly.featherAt'), -99);
+    assert.equal(run('state.silly.tickleUntil'), -99);
+    assert.equal(run('state.silly.tickling'), false);
+    assert.equal(run(`oldSounds${interaction.includes('gift') ? 'Gift' : 'Hero'}.every(sound=>sound.stopped)`), true);
+    run('state.time+=.5; update(.016);');
+    assert.equal(run('state.silly.tickling'), false, 'old feather action cannot restart laughter');
+  }
+});
+
+test('either toy catches the current orientation and clears all character gesture ownership', () => {
+  const { run } = game();
+  for (let toy=0;toy<2;toy++) {
+    run(`setMode('silly');
+      for(let i=0;i<6;i++){sillyTap(state.sun.x,state.sun.y,1);endSillyTouch({pointerId:1,type:'pointerup'});state.time+=.1;}
+      state.time+=.2;
+      sillyTap(state.sun.x,state.sun.y,1); sillyTap(state.sun.x,state.sun.y,2);
+      const before${toy}=sillyRotation();
+      {const toy=sillyToys()[${toy}];sillyTap(toy.x,toy.y,3);}`);
+    assert.equal(run('sillyRotation()'), run(`before${toy}`));
+    assert.equal(run('state.silly.spinAt'), -99);
+    assert.equal(run('state.silly.touches.size'), 0);
+    assert.equal(run('state.silly.dragId'), null);
+    assert.equal(run('state.silly.velocity'), 0);
   }
 });
