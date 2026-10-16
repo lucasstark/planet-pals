@@ -20,8 +20,8 @@ during the handoff. Keep this guide current when architecture or workflows chang
 - `game.js`: entire game, procedural Canvas 2D art, layouts, input, audio, state,
   and animation loop. No imports, framework, dependencies, or build step.
 - `manifest.json`: fullscreen, landscape-oriented PWA; relative start URL/scope.
-- `sw.js`: network-first GET caching, precaches app files and all 46 voice clips.
-  Cache version at review: `planet-pals-v7`. Registers on HTTPS or `localhost`.
+- `sw.js`: network-first GET caching, precaches app files and all 48 voice clips.
+  Cache version at review: `planet-pals-v11`. Registers on HTTPS or `localhost`.
 - `voice/*.m4a`: bundled speech, decoded and played through Web Audio.
 - `tools/make-voice.sh`: macOS `say` + `afconvert` voice generation. Run from root
   with `sh tools/make-voice.sh`; optional `VOICE` and `RATE` environment variables
@@ -71,7 +71,7 @@ tested in this initial review.
 
 ## Existing gameplay to preserve unless intentionally redesigned
 
-- Menu has Explore and Find it!; tapping empty space creates shooting stars.
+- Menu has Explore, Find it!, and Silly!; tapping empty space creates shooting stars.
 - Explore shows all eight planets with a partially offscreen sun. In Talk mode planets drift
   along short orbital arcs; Music freezes their positions and orbit clocks.
   Explore has no extra idle bobbing, so Music touch targets stay stationary. Taps pop/smile, emit particles, play notes, and show
@@ -93,7 +93,7 @@ tested in this initial review.
   prevent completion of old speech from unlocking a newer correction.
   Target glow hints begin after six seconds; spoken reminders repeat after 15.
   Round advance uses guarded wall-clock timeouts (2.6 sec normally, 5 sec at five stars, 6.5 sec for the ten-answer parade).
-- Home requires a 1.2-sec hold. Find's top-right speaker repeats the prompt.
+- Home returns to the menu immediately on a tap. Find's top-right speaker repeats the prompt.
   Starting Find anew resets score; Talk/Music preference lasts only in memory.
 
 ## Important constraints
@@ -123,8 +123,7 @@ tested in this initial review.
    echoes and rebinds the selected spotlight to the newly laid out body.
 3. **Input/render consistency:** hit testing uses base centers/radii, not rendered
    pop scale, bob/wiggle offsets, or ring geometry. Expanded 44px minimum-radius
-   hit areas help touch but can overlap. Home hold has no pointermove boundary
-   check, Blur/visibility cleanup now stops speech, holds, and echoes.
+   hit areas help touch but can overlap. Blur/visibility cleanup now stops speech, holds, and echoes.
 4. **Timing/performance:** particle damping multiplies velocity by 0.96 per frame,
    so behavior changes with refresh rate. Animation time is capped while Find
    timeouts use wall time. Background and planet gradients are rebuilt each
@@ -144,7 +143,7 @@ tested in this initial review.
 
 - Inspect menu, Explore Talk, Explore Music, and Find at landscape tablet,
   the target tablets first; secondary phone and portrait checks can follow; check rings, labels, hit regions, and insets.
-- Exercise rapid taps, multi-touch holds/releases/cancels, Home hold, mode
+- Exercise rapid taps, multi-touch holds/releases/cancels, Home tap, mode
   changes, and rotation during both holds and pending echoes.
 - Verify name/fact speech interruption, audio after first gesture, Music echo
   rhythm, and sound cleanup when leaving/backgrounding the game.
@@ -217,3 +216,62 @@ measurements of the reference video. No gameplay edits were made during analysis
   Six Node regression tests cover Find, fixed Music targets, stage navigation,
   resize, audio interruption ownership, multi-note holds, echo and cleanup.
   Actual iPad/Fire audio, performance, and installed-PWA updates remain to verify.
+
+## Songs and personal stars (2026-10-16)
+
+- Music now has three built-in instrumental melodies: Twinkle, Twinkle, Little
+  Star; Mary Had a Little Lamb; and Hot Cross Buns. Tap a song to play/restart,
+  choose another to replace it, or use Stop. Songs play once with planet pops,
+  ripples, and a progress bar. Children can play along; echoes are suppressed
+  during a song. Free play retains its original pentatonic tuning; song playback
+  and play-along use `SONG_SCALE`, a diatonic C5–C6 octave.
+- `SONGS`, `startSong`, `updateSong`, `stopSong`, and `songControls` own playback
+  and the bottom tray. Audio time controls rhythm; slow frames skip missed notes.
+  Mode changes, resize, blur, and hiding stop song oscillators. No new dependencies
+  or song audio downloads are needed.
+- Two smiling gold stars above the Explore planets say “Hi! Jettson” and “Hi! Langston”
+  when tapped in Talk or Music, with a name banner and sparkles. They do not
+  interrupt a song. `nameStars` shares drawing/hit geometry. Recorded clips are
+  `voice/Jettson.m4a` and `voice/Langston.m4a`; generation, preload, and precache
+  lists include both. Service worker cache is now `planet-pals-v11`.
+- Nine Node VM regressions pass, covering full song playback, timing/cleanup,
+  play-along/echo isolation, and personal-star routing along with prior gameplay.
+  Browser checks at 1024×768 covered playback, Stop, and both named stars, with
+  no console warnings/errors. Actual tablet audio and installed-PWA update/offline
+  behavior remain to verify.
+
+## Silly Sun and immediate Home (2026-10-16)
+
+- Home now returns immediately on pointerdown in every mode; the hold timer and
+  progress ring were removed. The menu has three large targets: Explore, Find it!,
+  and Silly!.
+- Silly presents one centered, fixed Sun target with generous ray-inclusive touch
+  bounds. Taps cycle through a synthesized boing, squeak/glasses, and raspberry/
+  moustache. Six taps with gaps under 1.2 seconds earn a giggle and star burst.
+- Holding the Sun for 0.35 seconds starts repeating synthesized giggles, squirming,
+  and a laughing face. Independent pointers allow multi-finger tickling; releasing
+  the final finger, pointer cancellation/leave, Home, mode changes, resizing,
+  blur, and hiding stop the tickle. No downloaded audio or new voice clips.
+- `layoutSilly`, `sillyTap`, `updateSilly`, `drawSilly`, and `stopSilly` own the mode.
+  Each tap replaces the previous sound phrase (at most eight oscillator handles),
+  and existing particle limits bound rapid-mash effects. The sound envelopes use
+  Web Audio; no new dependencies. Service worker cache is `planet-pals-v11`.
+- All eleven Node VM regressions pass, including immediate Home via the actual
+  input handler, rapid taps, tickle onset/repeat/release, multi-pointer behavior,
+  and lifecycle cleanup. Browser checks at 1024×768 verified the three-button
+  menu, Silly reactions, and Home with no console warnings/errors. Tablet sound
+  quality and real touch behavior still need device verification.
+
+## Musical Silly Sun and spins (2026-10-16)
+
+- Every Silly tap adds the same sine/triangle chime and eight-note cycle used in
+  Explore Music, with colored floating music notes. Funny sounds and tickling
+  remain. All chime nodes belong to the bounded, interruptible Silly phrase.
+- Six quick taps trigger an eased 360-degree turn over 1.1 seconds. New taps do
+  not restart an active turn. Centers and touch bounds remain fixed. Successive
+  spins reveal a party hat, rainbow freckles, and star-shaped sunglasses for
+  2.4 seconds. Blur, resize, or leaving clears the spin with the other effects.
+- Twelve regression tests pass, including exact Music frequencies, a complete
+  turn, no restart during a turn, surprise cycling, and unchanged target geometry.
+  The 1024×768 browser preview verified tones/reactions and rapid-tap spinning
+  without console warnings/errors. Actual tablet sound/touch checks remain.

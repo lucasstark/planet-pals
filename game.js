@@ -130,9 +130,11 @@ const state = {
   find: null,
   word: null,
   ripples: [],
-  homeHold: null,
   talk: true, // Explore: true = say the name and a fact, false = music only
   echo: { notes: [], lastTapAt: -99, playing: null },
+  nameStar: null,
+  silly: null,
+  song: null, // Current pre-made melody; independent of free-play echoes.
   holds: new Map(), // pointerId -> { body, since, sound }
   shakeAt: -99,
   spotlight: null,
@@ -142,7 +144,6 @@ const state = {
 
 const HOME = { x: 46, y: 46, r: 32 };
 let safeTop = 0; // iPad home-screen apps draw under the status bar.
-const HOME_HOLD_SECONDS = 1.2;
 
 // ---------- Drawing helpers ----------
 function circle(x, y, r) {
@@ -377,23 +378,25 @@ function unlockAudio() {
   if (audio && audio.state === 'suspended') audio.resume();
 }
 
-function tone(freq, when = 0, dur = 0.5, vol = 0.2, type = 'sine') {
+function tone(freq, when = 0, dur = 0.5, vol = 0.2, type = 'sine', endFreq = null) {
   if (!audio) return;
   const t0 = audio.currentTime + when;
   const o = audio.createOscillator();
   const g = audio.createGain();
   o.type = type;
-  o.frequency.value = freq;
+  o.frequency.setValueAtTime(freq, t0);
+  if (endFreq !== null) o.frequency.exponentialRampToValueAtTime(endFreq, t0 + dur);
   g.gain.setValueAtTime(0.0001, t0);
   g.gain.exponentialRampToValueAtTime(vol, t0 + 0.02);
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
   o.connect(g).connect(audio.destination);
   o.start(t0);
   o.stop(t0 + dur + 0.05);
+  return { stop() { o.stop(); } };
 }
 
 const sfx = {
-  chime: (i) => { tone(SCALE[i], 0, 0.6, 0.18); tone(SCALE[i] * 2, 0, 0.4, 0.05, 'triangle'); },
+  chime: (i, scale = SCALE) => { tone(scale[i], 0, 0.6, 0.18); tone(scale[i] * 2, 0, 0.4, 0.05, 'triangle'); },
   fanfare: () => [0, 2, 4, 5, 7].forEach((n, k) => tone(SCALE[n], k * 0.11, 0.5, 0.16)),
   sparkle: () => tone(SCALE[6 + Math.floor(Math.random() * 3)], 0, 0.25, 0.06, 'triangle'),
   boop: () => tone(300, 0, 0.25, 0.12),
@@ -467,7 +470,7 @@ function loadClip(key) {
 }
 
 function preloadVoice() {
-  ['tap', 'sun', 'expert', 'yay', 'good-job', 'hooray'].forEach(loadClip);
+  ['tap', 'sun', 'expert', 'yay', 'good-job', 'hooray', 'Jettson', 'Langston'].forEach(loadClip);
   for (const p of PLANETS) ['name', 'fact', 'find', 'found', 'thats'].forEach((k) => loadClip(`${k}-${p.name}`));
 }
 
@@ -549,6 +552,8 @@ function drawWord() {
 
 // ---------- Layout ----------
 function resize() {
+  stopSilly();
+  stopSong();
   releaseAllHolds();
   state.echo = { notes: [], lastTapAt: -99, playing: null };
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -573,16 +578,23 @@ function resize() {
     layoutExplore();
     if (state.spotlight) state.spotlight.body = selected ? state.bodies.find(b => b.planet === selected) : state.sun;
   }
+  else if (state.mode === 'silly') layoutSilly();
   else if (state.mode === 'find') layoutFind();
   else layoutMenu();
 }
 
 function layoutMenu() {
-  const r = Math.min(W * 0.17, H * 0.26);
+  const r = Math.min(W * 0.125, H * 0.21);
   state.menuButtons = [
-    { mode: 'explore', label: 'Explore', x: W * 0.32, y: H * 0.58, r },
-    { mode: 'find', label: 'Find it!', x: W * 0.68, y: H * 0.58, r },
+    { mode: 'explore', label: 'Explore', x: W * 0.2, y: H * 0.57, r },
+    { mode: 'find', label: 'Find it!', x: W * 0.5, y: H * 0.57, r },
+    { mode: 'silly', label: 'Silly!', x: W * 0.8, y: H * 0.57, r },
   ];
+}
+
+function layoutSilly() {
+  state.bodies = [];
+  state.sun = { x: W / 2, y: H * .55, r: Math.min(W * .24, H * .26), seed: 1.3, popAt: -99 };
 }
 
 function layoutExplore() {
@@ -637,12 +649,15 @@ function layoutFind() {
 
 // ---------- Modes ----------
 function setMode(mode) {
+  stopSilly();
+  state.silly = null;
+  stopSong();
   state.mode = mode;
   state.spotlight = null;
+  state.nameStar = null;
   state.starFlight = null;
   state.particles.length = 0;
   state.ripples.length = 0;
-  state.homeHold = null;
   state.word = null;
   state.echo = { notes: [], lastTapAt: -99, playing: null };
   releaseAllHolds();
@@ -651,6 +666,9 @@ function setMode(mode) {
   if (mode === 'explore') {
     layoutExplore();
     if (state.talk) say('tap');
+  } else if (mode === 'silly') {
+    state.silly = { count: 0, streak: 0, lastTap: -99, effect: 0, sounds: [], touches: new Map(), tickling: false, laughAt: 0, spinAt: -99, spins: 0, surprise: 0, note: 0 };
+    layoutSilly();
   } else if (mode === 'find') {
     state.find = null;
     newFindRound();
@@ -661,6 +679,252 @@ function setMode(mode) {
 
 function ripple(x, y, color) {
   state.ripples.push({ x, y, color, life: 0, max: 0.9 });
+}
+
+// ---------- Silly mode: one big, forgiving mash target ----------
+function stopSillySounds() {
+  if (!state.silly) return;
+  for (const sound of state.silly.sounds) sound?.stop();
+  state.silly.sounds = [];
+}
+
+function stopSilly() {
+  if (!state.silly) return;
+  stopSillySounds();
+  state.silly.touches.clear();
+  state.silly.tickling = false;
+  state.silly.streak = 0;
+  state.silly.lastTap = -99;
+  state.silly.spinAt = -99;
+}
+
+function sillyTap(x, y, pointerId) {
+  const sun = state.sun, silly = state.silly;
+  if (dist(x, y, sun.x, sun.y) > sun.r * 1.4) {
+    shootingStar(x, y); return;
+  }
+  const streak = state.time - silly.lastTap < 1.2 ? silly.streak + 1 : 1;
+  // Replace the last sound so rapid or multi-finger mashing stays bounded.
+  stopSillySounds();
+  silly.touches.set(pointerId, state.time);
+  silly.streak = streak >= 6 ? 0 : streak;
+  silly.lastTap = state.time;
+  silly.effect = streak >= 6 ? 3 : silly.count % 3;
+  silly.note = silly.count % 8;
+  silly.count++;
+  if (streak >= 6 && state.time - silly.spinAt >= 1.1) {
+    silly.spinAt = state.time;
+    silly.surprise = silly.spins++ % 3;
+  }
+  sun.popAt = state.time;
+  const effect = silly.effect;
+  if (effect === 3) {
+    silly.sounds = [0,1,2,3,4,5].map(i => tone(i % 2 ? 560 : 400, i * .11, .12, .1, 'triangle', 280));
+    for (let i = 0; i < 5; i++) burst(sun.x + Math.cos(i * TAU / 5) * sun.r, sun.y + Math.sin(i * TAU / 5) * sun.r, ['#ffe497','#ff99cb','#8feaff'][i % 3], 25);
+  } else if (effect === 0) {
+    silly.sounds = [tone(180, 0, .45, .14, 'sine', 760), tone(760, .15, .3, .07, 'triangle', 160)];
+  } else if (effect === 1) {
+    silly.sounds = [tone(1100, 0, .18, .09, 'sine', 1700), tone(1500, .18, .24, .08, 'sine', 500)];
+  } else {
+    silly.sounds = [0,1,2,3].map(i => tone(110 + i * 12, i * .07, .1, .07, 'square', 65));
+  }
+  // The same soft two-layer chime as Music mode, on every tap.
+  const freq = SCALE[silly.note];
+  silly.sounds.push(tone(freq, 0, .6, .18), tone(freq * 2, 0, .4, .05, 'triangle'));
+  burst(sun.x, sun.y - sun.r * .4, PLANETS[silly.note].glow, 18);
+  ripple(sun.x, sun.y, '#ffe497');
+  showWord(streak >= 6 ? 'Wheee!' : ['Boing!', 'Squeak!', 'Pbbbt!', 'Hee hee hee!'][effect], '#ffe497');
+}
+
+function updateSilly() {
+  const silly = state.silly;
+  if (!silly || !silly.touches.size) return;
+  const since = Math.min(...silly.touches.values());
+  if (state.time - since < .35) return;
+  if (!silly.tickling) {
+    silly.tickling = true;
+    silly.laughAt = state.time;
+    showWord('Hee hee hee!', '#ffe497');
+  }
+  // Keep the laughing face alive, with one bounded giggle phrase at a time.
+  silly.effect = 3;
+  silly.lastTap = state.time;
+  if (state.time < silly.laughAt) return;
+  stopSillySounds();
+  silly.sounds = [0,1,2].map(i => tone(i % 2 ? 640 : 470, i * .12, .14, .1, 'triangle', 260));
+  silly.laughAt = state.time + .42;
+  burst(state.sun.x, state.sun.y - state.sun.r * .6, '#ffb5d0', 5);
+}
+
+function sillyRotation() {
+  const k = Math.max(0, Math.min(1, (state.time - state.silly.spinAt) / 1.1));
+  // Ease into and out of one complete turn. Further taps never restart it.
+  return TAU * (k * k * (3 - 2 * k));
+}
+
+function drawSilly() {
+  const sun = state.sun, silly = state.silly;
+  const age = state.time - silly.lastTap;
+  const active = age < 1.2;
+  const wobble = active ? Math.sin((silly.tickling ? state.time : age) * 24) * .1 * Math.exp(-age * 3) : 0;
+  const r = sun.r * (active ? 1 + .07 * Math.sin((silly.tickling ? state.time : age) * 18) * Math.exp(-age * 3) : 1);
+  const spinning = state.time - silly.spinAt < 1.1;
+  const surprise = state.time - silly.spinAt < 2.4;
+  ctx.save(); ctx.translate(sun.x, sun.y); ctx.rotate(wobble + (spinning ? sillyRotation() : 0));
+  smallSun(0, 0, r);
+  drawFace(0, 0, r * .9, active && silly.effect === 3, 0, true, active ? .5 + .3 * Math.sin((silly.tickling ? state.time : age) * 20) : 0);
+  if (active && silly.effect === 1) {
+    ctx.strokeStyle = '#6c3483'; ctx.lineWidth = r * .055;
+    for (const side of [-1, 1]) { ctx.beginPath(); ctx.arc(side * r * .27, -r * .12, r * .24, 0, TAU); ctx.stroke(); }
+    ctx.beginPath(); ctx.moveTo(-r * .03, -r * .12); ctx.lineTo(r * .03, -r * .12); ctx.stroke();
+  }
+  if (active && silly.effect === 2) {
+    ctx.fillStyle = '#563325';
+    ellipse(-r * .15, r * .16, r * .23, r * .07, -.25);
+    ellipse(r * .15, r * .16, r * .23, r * .07, .25);
+  }
+  if (surprise && silly.surprise === 0) {
+    // A floppy party hat rides around with the whole Sun.
+    ctx.fillStyle = '#b59ae9'; ctx.beginPath();
+    ctx.moveTo(-r * .45, -r * .75); ctx.lineTo(-r * .13, -r * 1.24); ctx.lineTo(r * .3, -r * .8); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#fff0a3'; circle(-r * .13, -r * 1.24, r * .075);
+    for (let i = 0; i < 3; i++) circle(-r * .2 + i * r * .13, -r * .88, r * .035);
+  } else if (surprise && silly.surprise === 1) {
+    // Rainbow freckles and rosy cheeks.
+    for (const side of [-1, 1]) {
+      ctx.fillStyle = '#ff99cb'; ellipse(side * r * .52, r * .12, r * .15, r * .09, 0);
+      for (let i = 0; i < 3; i++) { ctx.fillStyle = ['#9dedff','#b59ae9','#eaff99'][i]; circle(side * (r * .4 + i * r * .1), r * .11, r * .025); }
+    }
+  } else if (surprise) {
+    // Big star-shaped sunglasses.
+    ctx.fillStyle = '#743b9a';
+    for (const side of [-1, 1]) { starPath(side * r * .27, -r * .12, r * .28, r * .13, 0); ctx.fill(); }
+    ctx.strokeStyle = '#743b9a'; ctx.lineWidth = r * .045;
+    ctx.beginPath(); ctx.moveTo(-r * .08, -r * .12); ctx.lineTo(r * .08, -r * .12); ctx.stroke();
+  }
+  ctx.restore();
+  if (active) {
+    // Musical notes float above the Sun without affecting its fixed touch target.
+    ctx.fillStyle = PLANETS[silly.note].glow; ctx.textAlign = 'center';
+    ctx.font = `800 ${Math.round(r * .2)}px system-ui`;
+    for (let i = 0; i < 3; i++) {
+      ctx.globalAlpha = Math.max(0, 1 - age / 1.2);
+      ctx.fillText(i % 2 ? '♫' : '♪', sun.x + (i - 1) * r * .9, sun.y - r * .7 - age * r * .5);
+    }
+    ctx.globalAlpha = 1;
+  }
+  if (!state.word || state.time - state.word.at > 3.5) sticker('Silly Sun!', W / 2, safeTop + H * .15, Math.min(64, W * .065), '#ffd66d');
+  ctx.font = `700 ${Math.min(26, W * .03)}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff0bc';
+  ctx.fillText(silly.tickling ? 'Tickle tickle!' : 'Tap for music • Tap fast to spin • Hold to tickle!', W / 2, H * .94);
+}
+
+// ---------- Pre-made songs ----------
+// Diatonic C5–C6 melodies, mapped to the eight planets in solar order.
+// Free play keeps its original pentatonic notes. Entries are a scale degree,
+// or [degree, beats] for longer/shorter notes; plain degrees last one beat.
+const SONG_SCALE = [523.25, 587.33, 659.25, 698.46, 783.99, 880, 987.77, 1046.5];
+const SONGS = [
+  { title: 'Twinkle, Twinkle', subtitle: 'Little Star', bpm: 104, notes: [
+    0,0,4,4,5,5,[4,2], 3,3,2,2,1,1,[0,2],
+    4,4,3,3,2,2,[1,2], 4,4,3,3,2,2,[1,2],
+    0,0,4,4,5,5,[4,2], 3,3,2,2,1,1,[0,2],
+  ] },
+  { title: 'Mary Had a', subtitle: 'Little Lamb', bpm: 112, notes: [
+    2,1,0,1,2,2,[2,2], 1,1,[1,2],2,4,[4,2],
+    2,1,0,1,2,2,2,2,1,1,2,1,[0,2],
+  ] },
+  { title: 'Hot Cross Buns', subtitle: 'A little sing-along', bpm: 104, notes: [
+    2,1,[0,2],2,1,[0,2],
+    [0,.5],[0,.5],[0,.5],[0,.5],[1,.5],[1,.5],[1,.5],[1,.5],2,1,[0,2],
+  ] },
+];
+
+function songTime() { return audio ? audio.currentTime : state.time; }
+
+function stopSong() {
+  if (state.song) for (const sound of state.song.sounds) sound?.stop();
+  state.song = null;
+}
+
+function startSong(index) {
+  if (state.mode !== 'explore' || state.talk || !SONGS[index]) return;
+  stopSong();
+  releaseAllHolds();
+  state.echo = { notes: [], lastTapAt: -99, playing: null };
+  const song = SONGS[index];
+  const beat = 60 / song.bpm;
+  let duration = 0;
+  const notes = song.notes.map(entry => {
+    const [note, beats] = Array.isArray(entry) ? entry : [entry, 1];
+    const event = { note, at: duration, duration: beats * beat };
+    duration += event.duration;
+    return event;
+  });
+  state.song = { index, notes, duration, started: songTime(), next: 0, sounds: [] };
+  updateSong();
+}
+
+function updateSong() {
+  const playing = state.song;
+  if (!playing) return;
+  const elapsed = songTime() - playing.started;
+  if (elapsed >= playing.duration) { stopSong(); return; }
+  // Skip missed notes after a slow frame instead of playing a burst of catch-up notes.
+  while (playing.next < playing.notes.length && playing.notes[playing.next].at <= elapsed) {
+    const event = playing.notes[playing.next++];
+    if (elapsed >= event.at + event.duration) continue;
+    for (const sound of playing.sounds) sound?.stop();
+    const note = event.note;
+    const body = state.bodies.find(b => b.planet.note === note);
+    if (!body) continue;
+    body.popAt = body.noteAt = state.time;
+    burst(body.x, body.y, body.planet.glow, 8);
+    ripple(body.x, body.y, body.planet.glow);
+    const freq = SONG_SCALE[note];
+    const duration = Math.max(.08, event.at + event.duration - elapsed - .04);
+    playing.sounds = [tone(freq, 0, duration, .18), tone(freq * 2, 0, duration * .7, .05, 'triangle')];
+  }
+}
+
+function songControls() {
+  const margin = Math.max(16, W * .035), gap = 12;
+  const y = H - 78;
+  const width = (W - margin * 2 - gap * 2) / 3;
+  return {
+    y: y - 52,
+    buttons: SONGS.map((song, index) => ({ x: margin + index * (width + gap), y, w: width, h: 66 })),
+    stop: { x: W - margin - 106, y: y - 48, w: 106, h: 44 },
+  };
+}
+
+function insideRect(x, y, rect) {
+  return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+}
+
+function drawSongControls() {
+  const controls = songControls(), playing = state.song;
+  ctx.fillStyle = 'rgba(8,14,36,.94)';
+  ctx.fillRect(0, controls.y, W, H - controls.y);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.font = '700 21px system-ui'; ctx.fillStyle = '#fff0a3';
+  ctx.fillText(playing ? 'Playing: ' + SONGS[playing.index].title + ' ' + SONGS[playing.index].subtitle : 'Pick a song • Play along!', controls.buttons[0].x, controls.y + 26, W - controls.buttons[0].x * 2 - 126);
+  if (playing) {
+    const stop = controls.stop;
+    ctx.fillStyle = '#69435d'; ctx.fillRect(stop.x, stop.y, stop.w, stop.h);
+    ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center'; ctx.font = '700 20px system-ui';
+    ctx.fillText('■ Stop', stop.x + stop.w / 2, stop.y + stop.h / 2);
+    ctx.fillStyle = '#ffe497';
+    ctx.fillRect(0, controls.y, W * Math.min(1, (songTime() - playing.started) / playing.duration), 4);
+  }
+  controls.buttons.forEach((rect, index) => {
+    const selected = playing?.index === index;
+    ctx.fillStyle = selected ? '#435698' : '#202e55'; ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.textAlign = 'center'; ctx.fillStyle = selected ? '#fff0a3' : '#f3f5ff';
+    ctx.font = `800 ${Math.min(22, W * .024)}px system-ui`;
+    ctx.fillText((selected ? '♪ ' : '▶ ') + SONGS[index].title, rect.x + rect.w / 2, rect.y + 25, rect.w - 16);
+    ctx.font = `600 ${Math.min(17, W * .019)}px system-ui`; ctx.fillStyle = '#cbd6f4';
+    ctx.fillText(SONGS[index].subtitle, rect.x + rect.w / 2, rect.y + 51, rect.w - 16);
+  });
 }
 
 // ---------- Echo (music mode) ----------
@@ -680,7 +944,7 @@ function echoRecord(body) {
 
 function updateEcho() {
   const e = state.echo;
-  if (state.mode !== 'explore' || state.talk) return;
+  if (state.mode !== 'explore' || state.talk || state.song) return;
   if (!e.playing) {
     if (e.notes.length >= 2 && state.holds.size === 0 && state.time - e.lastTapAt > ECHO_AFTER) {
       e.playing = { index: 0, nextAt: state.time + 0.4 };
@@ -716,7 +980,7 @@ function playBody(body, live) {
     showWord('Sun', '#ffd24a');
     if (live && state.talk) say('sun');
   } else {
-    sfx.chime(body.planet.note);
+    sfx.chime(body.planet.note, state.song ? SONG_SCALE : SCALE);
     burst(body.x, body.y, body.planet.glow, live ? 16 : 8);
     showWord(body.planet.name, body.planet.glow);
     if (live && state.talk) say(`name-${body.planet.name}`, `fact-${body.planet.name}`);
@@ -805,16 +1069,25 @@ canvas.addEventListener('pointerdown', (e) => {
   }
 
   if (dist(x, y, HOME.x, HOME.y) <= HOME.r + 10) {
-    state.homeHold = { id: e.pointerId, start: state.time };
+    setMode('menu');
     return;
   }
 
-  if (state.mode === 'explore') exploreTap(x, y, e.pointerId);
+  if (state.mode === 'silly') sillyTap(x, y, e.pointerId);
+  else if (state.mode === 'explore') exploreTap(x, y, e.pointerId);
   else findTap(x, y);
 });
 
 function endHold(e) {
-  if (state.homeHold && state.homeHold.id === e.pointerId) state.homeHold = null;
+  const silly = state.silly;
+  if (silly) {
+    silly.touches.delete(e.pointerId);
+    if (!silly.touches.size && silly.tickling) {
+      stopSillySounds();
+      silly.tickling = false;
+      silly.lastTap = state.time - 1.2;
+    }
+  }
   releaseHold(e.pointerId);
 }
 canvas.addEventListener('pointerup', endHold);
@@ -825,6 +1098,7 @@ canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 function exploreTap(x, y, pointerId) {
   const tb = talkButton();
   if (dist(x, y, tb.x, tb.y) <= tb.r + 10) {
+    stopSong();
     state.talk = !state.talk;
     state.spotlight = null;
     releaseAllHolds();
@@ -832,6 +1106,24 @@ function exploreTap(x, y, pointerId) {
     stopSpeaking();
     sfx.fanfare();
     showWord(state.talk ? 'Talk' : 'Music', '#ffffff');
+    return;
+  }
+
+  if (!state.talk) {
+    const controls = songControls();
+    if (state.song && insideRect(x, y, controls.stop)) { stopSong(); return; }
+    const index = controls.buttons.findIndex(rect => insideRect(x, y, rect));
+    if (index >= 0) { startSong(index); return; }
+    if (y >= controls.y) return;
+  }
+
+  const nameStar = nameStars().find(star => dist(x, y, star.x, star.y) <= 44);
+  if (!state.spotlight && nameStar) {
+    state.nameStar = { name: nameStar.name, at: state.time };
+    burst(nameStar.x, nameStar.y, '#ffe497', 26);
+    ripple(nameStar.x, nameStar.y, '#ffe497');
+    showWord('Hi! ' + nameStar.name, '#ffe497');
+    say(nameStar.name);
     return;
   }
 
@@ -854,9 +1146,9 @@ function exploreTap(x, y, pointerId) {
     return;
   }
   playBody(body, true);
-  if (!state.talk) echoRecord(body);
+  if (!state.talk && !state.song) echoRecord(body);
   if (state.talk) return;
-  const freq = body === state.sun ? 65.41 : SCALE[body.planet.note];
+  const freq = body === state.sun ? 65.41 : (state.song ? SONG_SCALE : SCALE)[body.planet.note];
   state.holds.set(pointerId, { body, since: state.time, sound: startSustain(freq) });
 }
 
@@ -922,6 +1214,7 @@ function findTap(x, y) {
 
 // ---------- Update ----------
 function update(dt) {
+  if (state.mode === 'silly') updateSilly();
   for (const p of state.particles) {
     p.life += dt;
     p.x += p.vx * dt;
@@ -938,10 +1231,6 @@ function update(dt) {
     s.y += s.vy * dt;
   }
   state.shooting = state.shooting.filter((s) => s.life < s.max);
-
-  if (state.homeHold && state.time - state.homeHold.start >= HOME_HOLD_SECONDS) {
-    setMode('menu');
-  }
 
   if (state.mode === 'find' && state.find.celebration) {
     const c = state.find.celebration;
@@ -974,6 +1263,7 @@ function update(dt) {
       b.x = state.sun.x + o.r * Math.cos(a);
       b.y = state.sun.y + o.r * Math.sin(a);
     }
+    updateSong();
     updateEcho();
   }
 }
@@ -1092,14 +1382,6 @@ function drawEmojiButton(btn, emoji) {
 
 function drawHome() {
   drawEmojiButton(HOME, '🏠');
-  if (state.homeHold) {
-    const k = Math.min((state.time - state.homeHold.start) / HOME_HOLD_SECONDS, 1);
-    ctx.strokeStyle = '#ffe36e';
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.arc(HOME.x, HOME.y, HOME.r + 4, -Math.PI / 2, -Math.PI / 2 + k * TAU);
-    ctx.stroke();
-  }
 }
 
 function drawFindHud() {
@@ -1129,7 +1411,7 @@ function drawMenu() {
   ctx.font = `bold ${Math.round(H * 0.1)}px system-ui, sans-serif`;
   ctx.fillText('Planet Pals', W / 2, safeTop + H * 0.17);
 
-  const [explore, find] = state.menuButtons;
+  const [explore, find, silly] = state.menuButtons;
   for (const btn of state.menuButtons) {
     const pulse = 1 + 0.03 * Math.sin(state.time * 3 + btn.x);
     ctx.fillStyle = 'rgba(255,255,255,0.1)';
@@ -1146,6 +1428,8 @@ function drawMenu() {
   drawPlanet(PLANETS[2], find.x - find.r * 0.1, find.y + find.r * 0.05, find.r * 0.5, { blink: blinkFor(5) });
   ctx.font = `${Math.round(find.r * 0.55)}px system-ui, sans-serif`;
   ctx.fillText('🔍', find.x + find.r * 0.38, find.y - find.r * 0.3);
+  smallSun(silly.x, silly.y, silly.r * .56);
+  drawFace(silly.x, silly.y, silly.r * .5, false, 0, true, .6);
 }
 
 function drawRipples() {
@@ -1181,6 +1465,11 @@ function draw() {
   drawBackground();
   if (state.mode === 'menu') {
     drawMenu();
+  } else if (state.mode === 'silly') {
+    drawRipples();
+    drawSilly();
+    drawWord();
+    drawHome();
   } else {
     if (state.mode === 'explore' && !state.spotlight) {
       drawSun(state.sun);
@@ -1191,11 +1480,13 @@ function draw() {
     if (state.spotlight) drawSpotlight();
     else if (state.mode === 'find' && state.find.celebration?.big) drawPlanetParade();
     else drawBodies();
+    if (state.mode === 'explore' && !state.spotlight) drawNameStars();
     if (state.mode === 'find') drawFindHud();
     if (state.mode === 'explore') drawModeControl();
     if (!state.spotlight) drawWord();
     drawStarFlight();
     drawHome();
+    if (state.mode === 'explore' && !state.talk) drawSongControls();
   }
   drawParticles();
   if (shake < 0.35) ctx.restore();
@@ -1354,6 +1645,28 @@ function drawSpotlight() {
   }
 }
 
+// Two personal stars sit above the planet row, clear of the top controls.
+function nameStars() {
+  return ['Jettson', 'Langston'].map((name, index) => ({ name, x: W * (.38 + index * .24), y: Math.max(safeTop + 158, H * .29) }));
+}
+
+function drawNameStars() {
+  for (const star of nameStars()) {
+    const active = state.nameStar?.name === star.name && state.time - state.nameStar.at < 1;
+    const radius = active ? 34 + Math.sin((state.time - state.nameStar.at) * Math.PI) * 8 : 30;
+    ctx.fillStyle = 'rgba(255,223,122,.1)'; circle(star.x, star.y, 43);
+    ctx.fillStyle = active ? '#fff4bb' : '#ffd66d';
+    starPath(star.x, star.y, radius, radius * .48, -.12); ctx.fill();
+    ctx.fillStyle = '#674b2e';
+    circle(star.x - 7, star.y - 2, 2.6); circle(star.x + 7, star.y - 2, 2.6);
+    ctx.strokeStyle = '#674b2e'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(star.x, star.y + 3, 7, .15, Math.PI - .15); ctx.stroke();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '700 17px system-ui'; ctx.fillStyle = '#fff0bc';
+    ctx.fillText(star.name, star.x, star.y + 52);
+  }
+}
+
 function drawModeControl() {
   const btn=talkButton(); drawEmojiButton(btn,state.talk ? '🗣️' : '🎵');
   ctx.font='700 15px system-ui'; ctx.textAlign='center'; ctx.fillStyle='#e6edff';
@@ -1384,8 +1697,9 @@ function frame(now) {
 }
 
 function quietGame() {
+  stopSilly();
+  stopSong();
   releaseAllHolds();
-  state.homeHold = null;
   state.echo = { notes: [], lastTapAt: -99, playing: null };
   stopSpeaking();
 }

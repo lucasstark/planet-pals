@@ -13,6 +13,8 @@ clip() { # clip <file> <text>
   afconvert -f m4af -d aac -b 48000 "/tmp/pp-voice.aiff" "$out/$1.m4a"
 }
 
+clip Jettson "Hi! Jettson!"
+clip Langston "Hi! Langston!"
 clip tap "Tap a planet!"
 clip sun "The Sun! The Sun is a giant star."
 clip expert "Ten stars! You are a space expert!"

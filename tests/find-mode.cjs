@@ -7,8 +7,9 @@ function game() {
   const timers = [];
   const gradient = { addColorStop() {} };
   const ctx = new Proxy({}, { get: (_, key) => key.startsWith('create') ? () => gradient : () => {} });
-  const sandbox = { console, Math, Map, performance: { now: () => 0 },
-    document: { getElementById: () => ({ getContext: () => ctx, addEventListener() {} }), documentElement: {}, addEventListener() {} },
+  const canvasListeners = {};
+  const sandbox = { canvasListeners, console, Math, Map, performance: { now: () => 0 },
+    document: { getElementById: () => ({ getContext: () => ctx, addEventListener(name, fn) { canvasListeners[name] = fn; } }), documentElement: {}, addEventListener() {} },
     window: { innerWidth: 1280, innerHeight: 800, addEventListener() {} },
     getComputedStyle: () => ({ getPropertyValue: () => '0' }),
     navigator: {}, requestAnimationFrame() {}, setTimeout: fn => timers.push(fn) };
@@ -124,4 +125,144 @@ test('Music holds and echoes perform without moving targets, and cleanup release
   run('quietGame();');
   assert.equal(run('state.echo.playing'), null);
   assert.equal(run('state.holds.size'), 0);
+});
+
+test('songs play every note at its beat, finish once, and keep targets fixed', () => {
+  const { run } = game();
+  run(`setMode('explore'); state.talk = false;
+    const played = []; let cancelled = 0;
+    tone = (freq, when, duration) => {
+      played.push({freq, duration}); return {stop() {cancelled++;}};
+    };
+    const positions = JSON.stringify(state.bodies.map(b => [b.x,b.y]));`);
+  for (let index = 0; index < 3; index++) {
+    run(`played.length = 0; startSong(${index});`);
+    const count = run('state.song.notes.length');
+    assert.equal(run('played.length'), 2, 'first note starts immediately');
+    run(`const playing${index} = state.song;`);
+    for (let i = 1; i < count; i++) {
+      run(`state.time = playing${index}.started + playing${index}.notes[${i}].at + .001; update(.016);`);
+      assert.equal(run('played.length'), (i + 1) * 2);
+    }
+    assert.equal(run('JSON.stringify(state.bodies.map(b => [b.x,b.y]))'), run('positions'));
+    run(`state.time = playing${index}.started + playing${index}.duration + .01; update(.016); draw();`);
+    assert.equal(run('state.song'), null);
+    run('state.time += 5; update(.016);');
+    assert.equal(run('played.length'), count * 2, 'songs do not loop or echo');
+  }
+});
+
+test('song controls replace and stop playback, play-along avoids echo, lifecycle cleans up', () => {
+  const { run } = game();
+  run(`setMode('explore'); state.talk=false;
+    let cancelled=0; const played=[];
+    tone=(freq)=>{played.push(freq); return {stop(){cancelled++;}};};
+    startSong(0); const oldSong=state.song; startSong(1);`);
+  assert.equal(run('cancelled'), 2);
+  assert.equal(run('state.song.index'), 1);
+  run(`const b=state.bodies[4]; exploreTap(b.x,b.y,1);`);
+  assert.equal(run('state.song.index'), 1);
+  assert.equal(run('state.echo.notes.length'), 0);
+  assert.equal(run('played[4]'), run('SONG_SCALE[4]'), 'play-along matches melody tuning');
+  run('releaseAllHolds(); const stop= songControls().stop; exploreTap(stop.x+10,stop.y+10,2);');
+  assert.equal(run('state.song'), null);
+  for (const cleanup of ["resize()", "quietGame()", "setMode('menu')", "exploreTap(talkButton().x,talkButton().y,3)"]) {
+    run(`state.talk=false; setMode('explore'); startSong(0); ${cleanup};`);
+    assert.equal(run('state.song'), null, cleanup);
+  }
+  run(`state.talk=false; setMode('explore'); startSong(0);
+    audio={currentTime:0}; state.song.started=0;
+    audio.currentTime=10; played.length=0; updateSong();`);
+  assert.ok(run('played.length') <= 2, 'slow frames skip missed notes without a burst');
+});
+
+test('personal stars speak the right names in Talk and Music without grabbing notes', () => {
+  const { run } = game();
+  for (const talk of [true, false]) {
+    run(`setMode('explore'); state.talk=${talk};`);
+    for (let i = 0; i < 2; i++) {
+      run(`{ const star=nameStars()[${i}]; exploreTap(star.x,star.y,4); draw(); }`);
+      assert.equal(run('responses.at(-1).keys[0]'), i ? 'Langston' : 'Jettson');
+      assert.equal(run('state.holds.size'), 0);
+      assert.equal(run('state.spotlight'), null);
+    }
+  }
+  run('startSong(0); const star=nameStars()[0]; exploreTap(star.x,star.y,5);');
+  assert.equal(run('state.song.index'), 0, 'a name star leaves the song playing');
+});
+
+
+test('Home navigates immediately on pointerdown and cleans up active sound', () => {
+  const { run } = game();
+  run(`unlockAudio=()=>{}; preloadVoice=()=>{};
+    const pointer=(x,y,id=1)=>canvasListeners.pointerdown({preventDefault(){},clientX:x,clientY:y,pointerId:id});
+    setMode('explore'); state.talk=false; startSong(0);
+    pointer(HOME.x,HOME.y);`);
+  assert.equal(run('state.mode'), 'menu');
+  assert.equal(run('state.song'), null);
+  run(`const sillyButton=state.menuButtons.find(b=>b.mode==='silly'); pointer(sillyButton.x,sillyButton.y);
+    let stopped=0; tone=()=>({stop(){stopped++;}});
+    pointer(state.sun.x,state.sun.y); state.time+=.4; update(.016);
+    pointer(HOME.x,HOME.y);`);
+  assert.equal(run('state.mode'), 'menu');
+  assert.equal(run('state.silly'), null);
+  assert.ok(run('stopped') > 0);
+});
+
+test('Silly taps vary, rapid taps reward, tickles repeat until release and cleanup cancels', () => {
+  const { run } = game();
+  run(`setMode('silly'); const sounds=[];
+    tone=(freq,when,dur)=>{const sound={stopped:false,stop(){this.stopped=true;}}; sounds.push(sound); return sound;};`);
+  for (let i=0; i<6; i++) {
+    run(`sillyTap(state.sun.x,state.sun.y,1); endHold({pointerId:1}); state.time+=.1; draw();`);
+    assert.equal(run('state.silly.effect'), i === 5 ? 3 : i % 3);
+    assert.ok(run('state.silly.sounds.length') <= 8);
+  }
+  assert.ok(run('state.particles.length') <= 300);
+  run(`state.time+=2; sillyTap(state.sun.x,state.sun.y,1); state.time+=.2; update(.016);`);
+  assert.equal(run('state.silly.tickling'), false, 'quick taps do not tickle');
+  run('state.time+=.2; update(.016); draw();');
+  assert.equal(run('state.silly.tickling'), true);
+  run('state.time+=.5; update(.016); draw();');
+  assert.equal(run('state.silly.sounds.length'), 3);
+  run('sillyTap(state.sun.x,state.sun.y,2); endHold({pointerId:1}); state.time+=.5; update(.016);');
+  assert.equal(run('state.silly.tickling'), true, 'one remaining finger keeps tickling');
+  run('endHold({pointerId:2});');
+  assert.equal(run('state.silly.tickling'), false);
+  assert.equal(run('state.silly.sounds.length'), 0);
+  assert.equal(run('sounds.every(s=>s.stopped)'), true);
+  for (const cleanup of ['quietGame()', 'resize()', "setMode('menu')"]) {
+    run(`setMode('silly'); sillyTap(state.sun.x,state.sun.y,1); state.time+=.4; update(.016); ${cleanup};`);
+    assert.equal(run('sounds.every(s=>s.stopped)'), true, cleanup);
+    assert.equal(run('state.silly ? state.silly.touches.size : 0'), 0);
+  }
+});
+
+test('Silly taps use Music tones and six quick taps complete an uninterrupted full spin', () => {
+  const { run } = game();
+  run(`setMode('silly'); const tones=[];
+    tone=(freq)=>{tones.push(freq);return {stop(){}};};
+    const center=JSON.stringify([state.sun.x,state.sun.y,state.sun.r]);`);
+  for (let i=0; i<6; i++) {
+    run('sillyTap(state.sun.x,state.sun.y,1); endHold({pointerId:1});');
+    assert.equal(run('tones.at(-2)'), run(`SCALE[${i}]`));
+    assert.equal(run('tones.at(-1)'), run(`SCALE[${i}]*2`));
+    if(i<5) run('state.time+=.1;');
+  }
+  assert.equal(run('state.silly.spins'), 1);
+  assert.equal(run('sillyRotation()'), 0);
+  run('const spinStart=state.silly.spinAt; state.time=spinStart+.55;');
+  assert.ok(Math.abs(run('sillyRotation()')-Math.PI)<.00001);
+  run('sillyTap(state.sun.x,state.sun.y,2); endHold({pointerId:2});');
+  assert.equal(run('state.silly.spinAt'), run('spinStart'), 'extra taps do not restart a turn');
+  run('state.time=spinStart+1.1; draw();');
+  assert.equal(run('sillyRotation()'), run('TAU'));
+  assert.equal(run('JSON.stringify([state.sun.x,state.sun.y,state.sun.r])'), run('center'));
+  // Further bursts rotate through party hat, rainbow freckles, and star glasses.
+  for(let i=1; i<=2; i++) {
+    run(`state.time+=2; for(let j=0;j<6;j++){sillyTap(state.sun.x,state.sun.y,1);endHold({pointerId:1});state.time+=.1;} draw();`);
+    assert.equal(run('state.silly.surprise'), i);
+  }
+  run('quietGame();');
+  assert.equal(run('state.silly.spinAt'), -99);
 });
