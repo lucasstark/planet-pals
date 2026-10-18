@@ -143,6 +143,7 @@ const state = {
 };
 
 const HOME = { x: 46, y: 46, r: 32 };
+let safeBottom = 0, safeLeft = 0, safeRight = 0;
 let safeTop = 0; // iPad home-screen apps draw under the status bar.
 
 // ---------- Drawing helpers ----------
@@ -315,8 +316,9 @@ function drawSun(sun) {
   ctx.fillStyle = body;
   circle(sun.x, sun.y, r);
 
-  const fr = r * 0.28;
-  drawFace(sun.x + r * 0.8, sun.y - r * 0.05, fr, blinkFor(sun.seed), 0, t - sun.popAt < 1.5, performanceFor(sun).mouth);
+  const compact = isPortrait() || H < 500;
+  const fr = r * (compact ? .8 : .28);
+  drawFace(sun.x + (compact ? 0 : r * .8), sun.y - r * 0.05, fr, blinkFor(sun.seed), 0, t - sun.popAt < 1.5, performanceFor(sun).mouth);
 }
 
 // ---------- Animation helpers ----------
@@ -391,7 +393,7 @@ function setSoundMode(mode) {
     gain.linearRampToValueAtTime(mode === 'off' ? 0 : mode === 'soft' ? .3 : 1, now + .025);
   }
 }
-function soundControl() { return { x: 132, y: HOME.y, r: 30 }; }
+function soundControl() { return { x: safeLeft + (isPortrait() ? 112 : 132), y: HOME.y, r: isPortrait() ? 26 : 30 }; }
 function drawSoundControl() {
   const { x, y, r } = soundControl();
   ctx.save(); ctx.translate(x, y);
@@ -445,9 +447,10 @@ function stopTransientSounds() {
 const SCALE = [523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1174.66, 1318.51, 1567.98];
 
 function unlockAudio() {
+  if (typeof DeviceAudio !== 'undefined') DeviceAudio.prepare();
   if (!audio) {
     const AC = window.AudioContext || window.webkitAudioContext;
-    if (AC) audio = new AC();
+    if (AC) audio = new AC({ latencyHint: 'interactive' });
   }
   if (audio && (audio.state === 'suspended' || audio.state === 'interrupted')) {
     try { Promise.resolve(audio.resume()).catch(() => {}); } catch (_) {}
@@ -647,9 +650,9 @@ function drawWord() {
   ctx.lineJoin = 'round';
   ctx.lineWidth = size * 0.16;
   ctx.strokeStyle = '#fffdf5';
-  ctx.strokeText(w.text, W / 2, safeTop + H * 0.14);
+  ctx.strokeText(w.text, W / 2, safeTop + (isPortrait() ? (state.mode === 'find' ? 130 : 110) : H < 500 ? 104 : H * .14));
   ctx.fillStyle = w.color === '#ffffff' ? '#526bd6' : w.color;
-  ctx.fillText(w.text, W / 2, safeTop + H * 0.14);
+  ctx.fillText(w.text, W / 2, safeTop + (isPortrait() ? (state.mode === 'find' ? 130 : 110) : H < 500 ? 104 : H * .14));
   ctx.restore();
 }
 
@@ -661,13 +664,18 @@ function resize() {
   releaseAllHolds();
   state.echo = { notes: [], lastTapAt: -99, playing: null };
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  W = window.innerWidth;
-  H = window.innerHeight;
+  const bounds = canvas.getBoundingClientRect?.();
+  W = bounds?.width || window.innerWidth;
+  H = bounds?.height || window.innerHeight;
   canvas.width = Math.round(W * dpr);
   canvas.height = Math.round(H * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   safeTop = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-top')) || 0;
+  safeBottom = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom')) || 0;
+  safeLeft = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-left')) || 0;
+  safeRight = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-right')) || 0;
   HOME.y = 46 + safeTop;
+  HOME.x = 46 + safeLeft;
 
   state.stars = Array.from({ length: Math.round((W * H) / 4500) }, () => ({
     x: Math.random() * W,
@@ -687,7 +695,32 @@ function resize() {
   else layoutMenu();
 }
 
+function isPortrait() { return W < 600 && H > W; }
+function friendDockTop() { return H - safeBottom - (isPortrait() ? 156 : Math.max(76, H * .175)); }
+function friendDock() {
+  const portrait = isPortrait(), width = W - safeLeft - safeRight;
+  return Array.from({ length: 9 }, (_, i) => {
+    const cols = portrait ? (i < 5 ? 5 : 4) : 9;
+    const index = portrait && i >= 5 ? i - 5 : i;
+    const row = portrait && i >= 5 ? 1 : 0;
+    const gap = width / cols;
+    const y = portrait ? friendDockTop() + 30 + row * 76 : friendDockTop() + (H - safeBottom - friendDockTop()) * .43;
+    return { x: safeLeft + gap * (index + .5), y, r: Math.min(30, gap * .28, portrait ? 23 : H * .04), hit: Math.min(36, gap * .46), labelY: portrait ? y + 31 : H - safeBottom - 15 };
+  });
+}
+function playgroundTitleY() { return isPortrait() ? safeTop + 125 : safeTop + Math.max(78, H * .15); }
+function playgroundCaptionY() { return isPortrait() ? friendDockTop() - 130 : friendDockTop() - 20; }
+
 function layoutMenu() {
+  if (isPortrait()) {
+    const r = Math.min(W * .19, H * .11);
+    state.menuButtons = [
+      { mode: 'explore', label: 'Explore', x: W * .26, y: H * .72, r },
+      { mode: 'find', label: 'Find it!', x: W * .74, y: H * .72, r },
+      { mode: 'silly', label: 'Playground', x: W * .5, y: H * .4, r: r * 1.35 },
+    ];
+    return;
+  }
   const r = Math.min(W * 0.125, H * 0.21);
   state.menuButtons = [
     { mode: 'explore', label: 'Explore', x: W * 0.2, y: H * 0.57, r },
@@ -698,10 +731,27 @@ function layoutMenu() {
 
 function layoutSilly() {
   state.bodies = [];
-  state.sun = { x: W / 2, y: H * .49, r: Math.min(W * .24, H * .23), seed: 1.3, popAt: -99 };
+  state.sun = { x: W / 2, y: isPortrait() ? (playgroundTitleY() + playgroundCaptionY()) / 2 : H * .49, r: Math.min(W * .25, H * .23), seed: 1.3, popAt: -99 };
 }
 
 function layoutExplore() {
+  if (isPortrait() || H < 500) {
+    const portrait = isPortrait();
+    const columns = portrait ? 3 : 9;
+    const rows = portrait ? 3 : 1;
+    const top = portrait ? safeTop + 232 : safeTop + 176;
+    const bottom = songControls().y - 10;
+    const slot = (W - safeLeft - safeRight - 16) / columns;
+    const rowHeight = Math.max(50, bottom - top) / rows;
+    const friends = [null, ...PLANETS].map((planet, index) => {
+      const span = planet?.span || 1;
+      const radius = Math.min(slot * .35 / span, rowHeight * .34, 48);
+      return makeBody(planet, safeLeft + 8 + slot * (index % columns + .5), top + rowHeight * (Math.floor(index / columns) + .5), radius);
+    });
+    state.sun = friends[0];
+    state.bodies = friends.slice(1);
+    return;
+  }
   const sunR = H * 0.55;
   state.sun = { x: -sunR * 0.55, y: H * 0.55, r: sunR, seed: 1.3, popAt: state.sun ? state.sun.popAt : -99 };
 
@@ -740,14 +790,19 @@ function layoutRow(planets, gap, minSize) {
   let x = margin + ((W - 2 * margin) - totalUnits * unit) / 2 + gap * unit;
   state.bodies = planets.map((p, i) => {
     const w = widths[i] * unit;
-    const y = safeTop + H * 0.62 + (i % 2 ? H * 0.09 : -H * 0.09);
-    const body = makeBody(p, x + w / 2, y, Math.max(p.size, minSize) * unit);
+    const y = H < 500 ? safeTop + (H - safeTop - safeBottom) * .59 : safeTop + H * .62 + (i % 2 ? H * .09 : -H * .09);
+    const radius = Math.min(Math.max(p.size, minSize) * unit, (H - safeBottom - 54 - y) / p.span);
+    const body = makeBody(p, x + w / 2, y, radius);
     x += w + gap * unit;
     return body;
   });
 }
 
 function layoutFind() {
+  if (isPortrait()) {
+    state.bodies = state.find.choices.map((p, i) => makeBody(p, W * (.26 + .48 * (i % 2)), H * (.43 + .31 * Math.floor(i / 2)), Math.min(W * .18 / p.span, H * .12)));
+    return;
+  }
   layoutRow(state.find.choices, 0.4, 0.75);
 }
 
@@ -855,7 +910,7 @@ function sillyTap(x, y, pointerId) {
       updateSilly(0);
     } else {
       silly.surprise = silly.spins++ % 3;
-      silly.accessoryUntil = state.time + 5;
+      silly.accessoryUntil = Infinity;
       sun.popAt = state.time;
       burst(sun.x, sun.y, '#ff99cb', 24);
       showWord('Ta-da!', '#ffe497');
@@ -1039,11 +1094,16 @@ function sillyRotation() {
 }
 
 function sillyToys() {
+  if (isPortrait()) return ['feather', 'gift', 'bubbles'].map((kind, i) => ({ kind, x: W * (.2 + i * .3), y: friendDockTop() - 71, r: 32 }));
   return [{ kind: 'feather', x: W * .12, y: H * .56 }, { kind: 'gift', x: W * .88, y: H * .56 }, { kind: 'bubbles', x: W * .88, y: H * .3 }].map(toy => ({ ...toy, r: Math.min(50, H * .065) }));
 }
 
 // Bubbles stay in side lanes, outside the hero grab area and all controls.
 function makeBubbles() {
+  if (isPortrait()) {
+    state.silly.bubbles = [0, 1, 2, 3].map(i => ({ x: W * (i % 2 ? .85 : .15), y: i < 2 ? playgroundTitleY() + 52 : playgroundCaptionY() - 32, r: 22, note: i * 2, phase: i * 1.7, at: state.time }));
+    return;
+  }
   const r = Math.min(34, H * .044);
   state.silly.bubbles = [0, 1, 2, 3].map((i) => ({
     x: W * (i < 2 ? .12 : [.82, .94][i - 2]), y: H * (i < 2 ? [.25, .38][i] : .73),
@@ -1065,12 +1125,11 @@ function drawBubbles() {
 }
 
 function sillyFriends() {
-  const gap = W / 9;
-  return [null, ...PLANETS].map((planet, i) => ({ planet, x: gap * (i + .5), y: H * .9, r: Math.min(30, H * .04, gap * .29), hit: Math.min(44, gap * .48) }));
+  return friendDock().map((slot, i) => ({ ...slot, planet: i ? PLANETS[i - 1] : null }));
 }
 
 function drawSillyFriends() {
-  ctx.fillStyle = 'rgba(13,23,47,.9)'; ctx.fillRect(0, H * .825, W, H * .175);
+  ctx.fillStyle = 'rgba(13,23,47,.9)'; ctx.fillRect(0, friendDockTop(), W, H - friendDockTop());
   for (const friend of sillyFriends()) {
     const selected = state.silly.friend === friend.planet;
     if (selected) {
@@ -1079,9 +1138,9 @@ function drawSillyFriends() {
     }
     if (friend.planet) drawPlanet(friend.planet, friend.x, friend.y, friend.r / Math.max(1, friend.planet.span * .8), { happy: selected });
     else { smallSun(friend.x, friend.y, friend.r * .85); drawFace(friend.x, friend.y, friend.r * .8, false, 0, true); }
-    ctx.font = `700 ${Math.min(16, W * .016)}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `700 ${Math.max(12, Math.min(16, W * .016))}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = selected ? '#fff0a3' : '#d7e3ff';
-    ctx.fillText(friend.planet?.name || 'Sun', friend.x, H * .975);
+    ctx.fillText(friend.planet?.name || 'Sun', friend.x, friend.labelY);
   }
 }
 
@@ -1126,6 +1185,10 @@ function drawSillyToys() {
 
 function drawSilly() {
   const sun = state.sun, silly = state.silly;
+  // A quiet pool of starlight gives the toy its own little stage.
+  const stage = ctx.createRadialGradient(sun.x, sun.y, 0, sun.x, sun.y, Math.min(W * .48, H * .4));
+  stage.addColorStop(0, 'rgba(89,111,190,.2)'); stage.addColorStop(1, 'rgba(89,111,190,0)');
+  ctx.fillStyle = stage; circle(sun.x, sun.y, Math.min(W * .48, H * .4));
   drawBubbles();
   const age = state.time - silly.lastTap;
   const active = age < 1.2;
@@ -1134,10 +1197,22 @@ function drawSilly() {
   // Fit the full rotating silhouette (rings, rays and hats) between name and caption.
   // The generous, fixed grab target remains unchanged while the character performs.
   const extent = Math.max(1.32, friend ? (friend.ring ? friend.ring.radius + friend.ring.width / 2 : 1) : 1.36);
-  const reach = Math.max(40, Math.min(sun.y - (safeTop + H * .15 + Math.min(64, W * .065) / 2 + 16), H * .79 - Math.min(26, W * .03) / 2 - 16 - sun.y));
+  const reach = Math.max(40, Math.min(sun.y - (playgroundTitleY() + 35), playgroundCaptionY() - 30 - sun.y, (W - safeLeft - safeRight) * .46));
   const r = Math.min(sun.r, reach / (extent * 1.07)) * (active ? 1 + .07 * Math.sin((silly.tickling ? state.time : age) * 18) * Math.exp(-age * 3) : 1);
   const dragging = silly.touches.get(silly.dragId)?.dragging;
   const surprise = state.time < silly.accessoryUntil;
+  if (silly.count === 0 && !silly.spinBand) {
+    // Two quiet curved arrows demonstrate turning without moving the child's toy.
+    ctx.save(); ctx.strokeStyle = '#92b7d9'; ctx.fillStyle = '#92b7d9'; ctx.lineWidth = 3;
+    const guideR = r * 1.5;
+    for (const offset of [0, Math.PI]) {
+      const end = offset + .7;
+      ctx.beginPath(); ctx.arc(sun.x, sun.y, guideR, offset - .5, end); ctx.stroke();
+      ctx.save(); ctx.translate(sun.x + Math.cos(end) * guideR, sun.y + Math.sin(end) * guideR); ctx.rotate(end);
+      ctx.beginPath(); ctx.moveTo(0, 8); ctx.lineTo(-6, -4); ctx.lineTo(6, -4); ctx.closePath(); ctx.fill(); ctx.restore();
+    }
+    ctx.restore();
+  }
   if (silly.spinBand) {
     ctx.save(); ctx.strokeStyle = 'rgba(178,224,255,.35)'; ctx.lineWidth = 3;
     for (let i = 0; i < 2; i++) { ctx.beginPath(); ctx.arc(sun.x, sun.y, r * 1.17, sillyRotation() + i * Math.PI, sillyRotation() + i * Math.PI + .45); ctx.stroke(); }
@@ -1189,10 +1264,10 @@ function drawSilly() {
     }
     ctx.globalAlpha = 1;
   }
-  sticker(friend?.name || 'Sun', W / 2, safeTop + H * .15, Math.min(64, W * .065), friend?.glow || '#ffd66d');
-  ctx.font = `700 ${Math.min(26, W * .03)}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff0bc';
+  sticker(friend?.name || 'Sun', W / 2, playgroundTitleY(), Math.max(32, Math.min(64, W * .065)), friend?.glow || '#ffd66d');
+  ctx.font = `700 ${Math.max(18, Math.min(26, W * .03))}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff0bc';
   const reaction = state.word && state.time - state.word.at < 1.4 ? state.word.text : '';
-  ctx.fillText(reaction, W / 2, H * .79);
+  ctx.fillText(reaction || (silly.count === 0 ? 'Give me a spin!' : ''), W / 2, playgroundCaptionY());
   // Travel from the actual toy to the cheek, rub on contact, then return.
   const featherAge = state.time - silly.featherAt;
   if (featherAge >= 0 && featherAge < 2.2) {
@@ -1277,14 +1352,18 @@ function updateSong() {
 }
 
 function songControls() {
-  const margin = Math.max(16, W * .035), gap = 12;
-  const y = H - 78;
-  const width = (W - margin * 2 - gap * 2) / 3;
-  return {
-    y: y - 52,
-    buttons: SONGS.map((song, index) => ({ x: margin + index * (width + gap), y, w: width, h: 66 })),
-    stop: { x: W - margin - 106, y: y - 48, w: 106, h: 44 },
-  };
+  const portrait = isPortrait();
+  const margin = Math.max(12, W * .035), gap = portrait ? 6 : 12;
+  const left = safeLeft + margin, right = W - safeRight - margin;
+  if (portrait) {
+    const y = H - safeBottom - 190;
+    return { y, buttons: SONGS.map((song, i) => ({ x: left, y: y + 44 + i * 47, w: right - left, h: 44 })),
+      stop: { x: right - 88, y: y + 1, w: 88, h: 40 } };
+  }
+  const y = H - safeBottom - 78;
+  const width = (right - left - gap * 2) / 3;
+  return { y: y - 52, buttons: SONGS.map((song, index) => ({ x: left + index * (width + gap), y, w: width, h: 66 })),
+    stop: { x: right - 106, y: y - 48, w: 106, h: 44 } };
 }
 
 function insideRect(x, y, rect) {
@@ -1296,8 +1375,8 @@ function drawSongControls() {
   ctx.fillStyle = 'rgba(8,14,36,.94)';
   ctx.fillRect(0, controls.y, W, H - controls.y);
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.font = '700 21px system-ui'; ctx.fillStyle = '#fff0a3';
-  ctx.fillText(playing ? 'Playing: ' + SONGS[playing.index].title + ' ' + SONGS[playing.index].subtitle : 'Pick a song • Play along!', controls.buttons[0].x, controls.y + 26, W - controls.buttons[0].x * 2 - 126);
+  ctx.font = `700 ${isPortrait() ? 16 : 21}px system-ui`; ctx.fillStyle = '#fff0a3';
+  ctx.fillText(isPortrait() ? (playing ? 'Sing along!' : 'Pick a song') : playing ? 'Playing: ' + SONGS[playing.index].title + ' ' + SONGS[playing.index].subtitle : 'Pick a song • Play along!', controls.buttons[0].x, controls.y + 26, W - controls.buttons[0].x * 2 - 126);
   if (playing) {
     const stop = controls.stop;
     ctx.fillStyle = '#69435d'; ctx.fillRect(stop.x, stop.y, stop.w, stop.h);
@@ -1310,10 +1389,10 @@ function drawSongControls() {
     const selected = playing?.index === index;
     ctx.fillStyle = selected ? '#435698' : '#202e55'; ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
     ctx.textAlign = 'center'; ctx.fillStyle = selected ? '#fff0a3' : '#f3f5ff';
-    ctx.font = `800 ${Math.min(22, W * .024)}px system-ui`;
-    ctx.fillText((selected ? '♪ ' : '▶ ') + SONGS[index].title, rect.x + rect.w / 2, rect.y + 25, rect.w - 16);
+    ctx.font = `800 ${isPortrait() ? 16 : Math.min(22, W * .024)}px system-ui`;
+    ctx.fillText((selected ? '♪ ' : '▶ ') + SONGS[index].title + (isPortrait() ? ' ' + SONGS[index].subtitle : ''), rect.x + rect.w / 2, rect.y + (isPortrait() ? 21 : 25), rect.w - 16);
     ctx.font = `600 ${Math.min(17, W * .019)}px system-ui`; ctx.fillStyle = '#cbd6f4';
-    ctx.fillText(SONGS[index].subtitle, rect.x + rect.w / 2, rect.y + 51, rect.w - 16);
+    if (!isPortrait()) ctx.fillText(SONGS[index].subtitle, rect.x + rect.w / 2, rect.y + 51, rect.w - 16);
   });
 }
 
@@ -1364,7 +1443,7 @@ function playBody(body, live) {
     if (state.talk) sfx.chime(8);
     else {
       sfx.thump();
-      ripple(body.x + body.r * 0.8, body.y, '#ffd24a');
+      ripple(body.x + (isPortrait() || H < 500 ? 0 : body.r * .8), body.y, '#ffd24a');
     }
     burst(body.x + body.r * 0.8, body.y, '#ffd24a', 20);
     showWord('Sun', '#ffd24a');
@@ -1437,7 +1516,7 @@ function hitBody(x, y) {
 }
 
 function speakerButton() {
-  return { x: W - HOME.x, y: HOME.y, r: HOME.r };
+  return { x: W - 46 - safeRight, y: HOME.y, r: HOME.r };
 }
 
 canvas.addEventListener('pointerdown', (e) => {
@@ -1547,7 +1626,7 @@ function exploreTap(x, y, pointerId) {
 }
 
 function talkButton() {
-  return { x: W - HOME.x, y: HOME.y, r: HOME.r };
+  return { x: W - 46 - safeRight, y: HOME.y, r: HOME.r };
 }
 
 function findTap(x, y) {
@@ -1651,7 +1730,7 @@ function update(dt) {
   if (state.mode === 'explore') {
     for (const b of state.bodies) {
       const o = b.orbit;
-      if (!state.talk || state.spotlight) continue; // Freeze targets while children play music.
+      if (!o || !state.talk || state.spotlight) continue; // Compact grids and musical targets stay still.
       o.time += dt;
       const a = o.a0 + o.amp * Math.sin(o.time * o.speed + o.phase);
       b.x = state.sun.x + o.r * Math.cos(a);
@@ -1792,7 +1871,7 @@ function drawFindHud() {
   const n = 5;
   const gap = Math.min(56, (W - 220) / n);
   const x0 = W / 2 - (gap * (n - 1)) / 2;
-  const y = H - Math.max(28, H * 0.06);
+  const y = H - safeBottom - Math.max(28, H * 0.06);
   for (let i = 0; i < n; i++) {
     starPath(x0 + i * gap, y, gap * 0.42, gap * 0.19, 0);
     const pending = state.starFlight && state.time - state.starFlight.at < 0.9 && i === state.starFlight.index;
@@ -1811,7 +1890,7 @@ function drawMenu() {
   ctx.fillStyle = '#fff';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = `bold ${Math.round(H * 0.1)}px system-ui, sans-serif`;
+  ctx.font = `bold ${Math.round(Math.min(H * .1, W * .12, 80))}px system-ui, sans-serif`;
   ctx.fillText('Planet Pals', W / 2, safeTop + H * 0.17);
 
   const [explore, find, silly] = state.menuButtons;
@@ -1823,7 +1902,7 @@ function drawMenu() {
     ctx.lineWidth = 4;
     ctx.stroke();
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.font = `bold ${Math.round(btn.r * 0.2)}px system-ui, sans-serif`;
+    ctx.font = `bold ${Math.round(Math.max(18, btn.r * .2))}px system-ui, sans-serif`;
     ctx.fillText(btn.label, btn.x, btn.y + btn.r + btn.r * 0.22);
   }
 
@@ -1925,15 +2004,21 @@ function sticker(text, x, y, size, color, maxWidth = W * 0.8) {
 
 function dockBodies() {
   const items = [state.sun, ...state.bodies];
+  if (isPortrait() || H < 500) return friendDock().map((slot, i) => ({ ...slot, body: items[i] }));
   const slot = W / items.length;
   return items.map((body, i) => ({ body, x: slot * (i + 0.5), y: H * 0.865,
-    r: Math.min(H * 0.048, slot * 0.27), hit: Math.min(slot * 0.49, H * 0.105) }));
+    r: Math.min(H * 0.048, slot * 0.27), hit: Math.min(slot * 0.49, H * 0.105), labelY: H * .955 }));
 }
 function spotlightHero() {
   const p = state.spotlight.body.planet;
+  if (isPortrait()) {
+    const top = safeTop + 160, bottom = friendDockTop();
+    return { x: W * .5, y: top + (bottom - top) * .3, r: Math.min(W * .28 / (p?.span || 1), (bottom - top) * .23) };
+  }
+  if (H < 500) return { x: W * .28, y: (safeTop + 150 + friendDockTop()) / 2, r: Math.min((friendDockTop() - safeTop - 150) * .39, W * .16 / (p?.span || 1)) };
   return { x: W * 0.28, y: H * 0.43, r: Math.min(H * 0.205, W * 0.205 / (p?.span || 1)) };
 }
-function spotlightClose() { return { x: W - 46, y: safeTop + H * 0.19, r: 26 }; }
+function spotlightClose() { return { x: W - safeRight - 36, y: isPortrait() ? safeTop + 140 : Math.max(safeTop + 125, safeTop + H * .19), r: 24 }; }
 
 const TITLE_COLORS = ['#677589','#da8527','#328cc9','#ce563d','#b77447','#bd8a36','#239ca8','#456acb'];
 const FACTS = {
@@ -2026,32 +2111,40 @@ function drawSpotlight() {
   const glow = ctx.createRadialGradient(hero.x,hero.y,0,hero.x,hero.y,hero.r*1.9);
   glow.addColorStop(0,'rgba(117,125,221,0.23)'); glow.addColorStop(1,'rgba(117,125,221,0)');
   ctx.fillStyle=glow; circle(hero.x,hero.y,hero.r*1.9);
-  sticker(name,hero.x,H*.135,Math.min(H*.079,W*.053),p ? TITLE_COLORS[PLANETS.indexOf(p)] : '#eaa325',W*.43);
+  sticker(name,hero.x,isPortrait() ? safeTop + 140 : Math.max(safeTop + 126, H*.135),isPortrait() ? 30 : Math.min(H*.079,W*.053),p ? TITLE_COLORS[PLANETS.indexOf(p)] : '#eaa325',W*(isPortrait() ? .65 : .43));
   if (p) drawPlanet(p,hero.x,hero.y,hero.r*scale,{blink:blinkFor(body.seed),...performanceFor(body)});
   else { smallSun(hero.x,hero.y,hero.r*scale); drawFace(hero.x,hero.y,hero.r*.72,blinkFor(1),0,true,performanceFor(body).mouth); }
   // One idea at a time; picture and words enter just after the character.
   ctx.save(); ctx.globalAlpha=Math.min(1,Math.max(0,(age-.18)/.3));
-  drawFactPicture(name,W*.71,H*.355,H*.13);
-  FACTS[name].forEach((line,i)=>sticker(line,W*.71,H*(.56+i*.071),H*.052,'#ef9747',W*.4));
+  if (isPortrait()) {
+    const factY = hero.y + hero.r + 62;
+    drawFactPicture(name, W * .23, factY, Math.min(40, (friendDockTop() - factY) * .6));
+    FACTS[name].forEach((line,i)=>sticker(line,W*.64,factY-12+i*27,22,'#ef9747',W*.57));
+  } else {
+    drawFactPicture(name,W*.71,H*(H < 500 ? .41 : .355),H*(H < 500 ? .09 : .13));
+    FACTS[name].forEach((line,i)=>sticker(line,W*.71,H*(.56+i*.071),H*.052,'#ef9747',W*.4));
+  }
   ctx.restore();
   const close=spotlightClose(); drawEmojiButton(close,'×');
   ctx.fillStyle='#dce6ff'; ctx.font='600 12px system-ui'; ctx.textAlign='center';
   ctx.fillText('All planets',close.x,close.y+43);
-  ctx.fillStyle='rgba(17,24,48,0.95)'; ctx.fillRect(0,H*.755,W,H*.245);
-  ctx.fillStyle='rgba(204,218,255,0.15)'; ctx.fillRect(0,H*.755,W,2);
+  ctx.fillStyle='rgba(17,24,48,0.95)'; ctx.fillRect(0,isPortrait() || H < 500 ? friendDockTop() : H*.755,W,H);
+  ctx.fillStyle='rgba(204,218,255,0.15)'; ctx.fillRect(0,isPortrait() || H < 500 ? friendDockTop() : H*.755,W,2);
   for(const d of dockBodies()) {
     const selected=d.body===body;
     if(selected) { ctx.fillStyle='rgba(255,224,131,0.16)'; circle(d.x,d.y,d.r*1.65); }
     if(d.body.planet) drawPlanet(d.body.planet,d.x,d.y,d.r,{...performanceFor(d.body),blink:blinkFor(d.body.seed)});
     else smallSun(d.x,d.y,d.r*.85);
     ctx.fillStyle=selected ? '#ffe497' : '#d7dff4';
-    ctx.font=`700 ${Math.min(18,W*.014)}px system-ui`; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText(d.body.planet?.name || 'Sun',d.x,H*.955);
+    ctx.font=`700 ${isPortrait() ? 12 : Math.max(12,Math.min(18,W*.014))}px system-ui`; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(d.body.planet?.name || 'Sun',d.x,d.labelY);
   }
 }
 
 // Two personal stars sit above the planet row, clear of the top controls.
 function nameStars() {
+  if (isPortrait()) return ['Jettson', 'Langston'].map((name, i) => ({ name, x: W * (.3 + i * .4), y: safeTop + 157 }));
+  if (H < 500) return ['Jettson', 'Langston'].map((name, i) => ({ name, x: W * (.4 + i * .22), y: safeTop + 121 }));
   return ['Jettson', 'Langston'].map((name, index) => ({ name, x: W * (.38 + index * .24), y: Math.max(safeTop + 158, H * .29) }));
 }
 
@@ -2083,7 +2176,7 @@ function drawStarFlight() {
   if(!f || state.mode!=='find') return;
   const age=state.time-f.at, k=Math.min(1,age/.9), eased=1-Math.pow(1-k,3);
   const gap=Math.min(56,(W-220)/5);
-  const tx=W/2+gap*(f.index-2), ty=H-Math.max(28,H*.06);
+  const tx=W/2+gap*(f.index-2), ty=H-safeBottom-Math.max(28,H*.06);
   if(age>1.3) return;
   const x=f.x+(tx-f.x)*eased, y=f.y+(ty-f.y)*eased-Math.sin(k*Math.PI)*H*.15;
   ctx.save(); ctx.globalAlpha=age<.9 ? 1 : Math.max(0,1-(age-.9)/.4);

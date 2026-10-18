@@ -1,11 +1,11 @@
 // Network-first: updates show up whenever the tablet is online; the cache keeps it playable offline.
-const CACHE = 'planet-pals-v14';
+const CACHE = 'planet-pals-v15';
 const PLANETS = ['Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune'];
 const VOICE = ['tap', 'sun', 'expert', 'yay', 'good-job', 'hooray', 'Jettson', 'Langston',
   'reaction-whoa', 'reaction-whee', 'reaction-giggle']
   .concat(PLANETS.flatMap((p) => ['name', 'fact', 'find', 'found', 'thats'].map((k) => `${k}-${p}`)))
   .map((k) => `voice/${k}.m4a`);
-const FILES = ['./', 'index.html', 'game.js', 'manifest.json', 'icon-192.png', 'icon-512.png', ...VOICE];
+const FILES = ['./', 'index.html', 'game.js', 'device-audio.js', 'manifest.json', 'icon-192.png', 'icon-512.png', ...VOICE];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

@@ -390,3 +390,18 @@ for a reviewed agent-led enhancement and gave the lead authority to execute.
 - Design/research: docs/enhancement-plan.md, docs/dinosaur-research.md and
   docs/ipad-audio-research.md. See docs/release-review.md for verification and
   docs/learning-roadmap.md for later ordering/tracing; neither new activity was added.
+
+## Phone play and audio recovery v15 (2026-10-18)
+
+The user's reported iPhone compression makes phone layouts a current priority,
+superseding the initial tablet-only prioritization. Preserve the familiar game.
+`isPortrait`, `friendDock`, `friendDockTop` share compact layout geometry;
+Explore compact targets are stationary and may have no `orbit` property.
+`device-audio.js` supplies gesture-only `DeviceAudio.prepare()` and the accessible
+parent sound dialog. Load it before game.js; its event handlers use game globals
+only after startup. The canvas uses its actual CSS bounds and all safe-area vars.
+The manifest now allows either orientation; no native app migration is included.
+Gift accessories persist until another toy/friend/lifecycle clears them. Worker
+v15 precaches 58 assets including the helper. See docs/phone-play-release.md.
+Physical iPad sound recovery remains unverified; distinguish it from successful
+browser interaction, offline loading and AudioContext state checks.
