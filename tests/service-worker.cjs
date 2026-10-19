@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const source = fs.readFileSync('sw.js', 'utf8');
 const origin = 'https://example.test';
-const cacheName = 'planet-pals-v16';
+const cacheName = 'planet-pals-v17';
 function worker() {
   const listeners = {}, stores = new Map(), events = [], added = [];
   let network = async () => new Response('online'), rejectAdd = false, rejectPut = false, claimWait;
@@ -60,7 +60,7 @@ test('installation precaches all three reactions before requesting activation', 
   const w = worker();
   await w.lifecycle('install');
   for (const reaction of ['whoa', 'whee', 'giggle']) assert.ok(w.added.includes(`voice/reaction-${reaction}.m4a`));
-  assert.equal(w.added.length, 91);
+  assert.equal(w.added.length, 95);
   assert.ok(w.added.includes('device-audio.js'));
   assert.deepEqual(w.events, ['precache', 'skipWaiting']);
   const failing = worker(); failing.rejectAdd();

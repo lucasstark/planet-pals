@@ -7,7 +7,7 @@ function worker(fetcher = async () => ({ ok: true, clone: () => 'copy' })) {
   const handlers = {}, added = [], deleted = [], written = [];
   const sandbox = { URL, fetch: fetcher, self: {location:{origin:'https://example.test'}, addEventListener:(n,f)=>handlers[n]=f,skipWaiting(){},clients:{claim(){}}}, caches: {
     open:async()=>({addAll:async files=>added.push(...files),put:async(...args)=>written.push(args),match:async()=> 'offline response'}),
-    keys:async()=>['another-app-v1','planet-pals-v12','planet-pals-v16'], delete:async k=>deleted.push(k),match:async()=> 'offline response'
+    keys:async()=>['another-app-v1','planet-pals-v12','planet-pals-v17'], delete:async k=>deleted.push(k),match:async()=> 'offline response'
   }};
   vm.runInNewContext(fs.readFileSync('sw.js','utf8'),sandbox);
   async function event(name, extra={}) {
@@ -21,7 +21,7 @@ function worker(fetcher = async () => ({ ok: true, clone: () => 'copy' })) {
 }
 test('precache includes every app file, companion state and recorded prompt',async()=>{
   const w=worker();await w.event('install');
-  for(const path of w.added)assert.ok(fs.existsSync(path),`Missing offline asset: ${path}`);
+  for(const path of w.added)assert.ok(fs.existsSync(path.split('?')[0]),`Missing offline asset: ${path}`);
   for(const path of ['adventure.js','adventure.css','art/pip.svg','art/pip-laugh.svg','art/pip-five.svg','art/pip-curious.svg'])assert.ok(w.added.includes(path));
   const prompts=fs.readFileSync('tools/journey-voice.tsv','utf8').trim().split('\n').map(line=>line.split('\t')[0]);
   for(const key of prompts)assert.ok(w.added.includes(`voice/${key}.m4a`),`Uncached prompt: ${key}`);

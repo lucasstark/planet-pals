@@ -480,3 +480,7 @@ audio and installed-PWA verification remain outstanding.
 Combined verification: all 48 Node tests and JavaScript syntax checks pass. The
 merged browser preview opens the parent dialog, synchronizes mute with adventures,
 and launches the original nine-friend playground without console warnings/errors.
+
+Release v17 adds versioned script/style URLs and their offline copies after the
+public upgrade check exposed browser reuse of v15 game.js with the new shell.
+This avoids mixing old engine code with new adventures during an update.

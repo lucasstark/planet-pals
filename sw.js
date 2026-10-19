@@ -1,12 +1,12 @@
 // Network-first: updates show up whenever the tablet is online; the cache keeps it playable offline.
-const CACHE = 'planet-pals-v16';
+const CACHE = 'planet-pals-v17';
 const PLANETS = ['Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune'];
 const VOICE = ['tap', 'sun', 'expert', 'yay', 'good-job', 'hooray', 'Jettson', 'Langston',
   'reaction-whoa', 'reaction-whee', 'reaction-giggle']
   .concat(PLANETS.flatMap((p) => ['name', 'fact', 'find', 'found', 'thats'].map((k) => `${k}-${p}`)))
   .map((k) => `voice/${k}.m4a`);
 const JOURNEY_VOICE = ['play-intro', 'order-intro', 'parade-done', 'meet-intro', 'letters-intro', 'journey-done', 'clue-red', 'clue-rings', 'clue-big', 'clue-hot', 'clue-side', 'puzzle-rings', 'puzzle-moon', 'puzzle-storm', 'hint-Mars', 'hint-Saturn', 'hint-Jupiter', 'hint-Venus', 'hint-Uranus', 'answer-Mars', 'answer-Saturn', 'answer-Jupiter', 'answer-Venus', 'answer-Uranus', 'answer-ring', 'answer-moon', 'answer-storm'].map(k => `voice/${k}.m4a`);
-const FILES = ['./', 'index.html', 'game.js', 'device-audio.js', 'adventure.js', 'adventure.css', 'art/pip.svg', 'art/pip-laugh.svg', 'art/pip-curious.svg', 'art/pip-five.svg', 'manifest.json', 'icon-192.png', 'icon-512.png', ...VOICE, ...JOURNEY_VOICE];
+const FILES = ['./', 'index.html', 'game.js', 'device-audio.js', 'adventure.js', 'adventure.css', 'art/pip.svg', 'art/pip-laugh.svg', 'art/pip-curious.svg', 'art/pip-five.svg', 'manifest.json', 'icon-192.png', 'icon-512.png', ...VOICE, ...JOURNEY_VOICE, 'game.js?v=17', 'adventure.js?v=17', 'device-audio.js?v=17', 'adventure.css?v=17'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
