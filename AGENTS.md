@@ -17,11 +17,14 @@ during the handoff. Keep this guide current when architecture or workflows chang
 
 - `index.html`: full-screen canvas, mobile viewport/meta tags, touch/selection
   suppression, safe-area CSS variable. Loads `game.js` as a classic script.
-- `game.js`: entire game, procedural Canvas 2D art, layouts, input, audio, state,
-  and animation loop. No imports, framework, dependencies, or build step.
+- `game.js`: original Canvas activities, procedural planet art, shared audio,
+  state, and animation loop. `adventure.js` adds the semantic DOM activity hub,
+  Pip companion, learning rounds, sticker saving and global sound controls;
+  `adventure.css` styles these screens. No framework, dependencies, or build step.
+- `art/pip*.svg`: original vector companion, laughing/curious faces and high five.
 - `manifest.json`: fullscreen, landscape-oriented PWA; relative start URL/scope.
-- `sw.js`: network-first GET caching, precaches app files and all 48 voice clips.
-  Cache version at review: `planet-pals-v12`. Registers on HTTPS or `localhost`.
+- `sw.js`: network-first GET caching, precaches app files, companion art and all 75 voice clips.
+  Local adventure version: `planet-pals-v13` (not published during this pass). Registers on HTTPS or `localhost`.
 - `voice/*.m4a`: bundled speech, decoded and played through Web Audio.
 - `tools/make-voice.sh`: macOS `say` + `afconvert` voice generation. Run from root
   with `sh tools/make-voice.sh`; optional `VOICE` and `RATE` environment variables
@@ -29,7 +32,8 @@ during the handoff. Keep this guide current when architecture or workflows chang
 - `icon-192.png`, `icon-512.png`: PWA icons; planets themselves are drawn in code.
 - Git remote: `git@github.com:lucasstark/planet-pals.git`. No deployment workflow,
   package manifest or deployment automation was present. Focused Find regression
-  tests now live in `tests/find-mode.cjs`; run `node --test tests/find-mode.cjs`.
+  tests live in `tests/find-mode.cjs`, `tests/adventure.cjs`, and
+  `tests/offline.cjs`; run `node --test tests/*.cjs`.
 
 Serve from the repo root with `python3 -m http.server 8000 --bind 127.0.0.1`, then
 open `http://localhost:8000`. HTTP serving is needed for voice fetching; avoid
@@ -309,3 +313,61 @@ This section supersedes the earlier hold-to-tickle interaction descriptions.
   tactile character play, clear pictorial toys, and a full cast. Future tracing
   planet names and arranging planets in solar order were discussed as later
   activities, not implemented or authorized as part of this prototype.
+
+
+## Pip’s Space Club (2026-10-18, local development)
+
+- The initial screen is now a warm, responsive activity hub personalized for
+  Jettson and Langston. The original Canvas game remains in `game.js`, reached
+  through a native-button Music & planet play chooser. It launches Explore Talk,
+  Explore Music, Find, or Silly directly. The original canvas loop skips drawing
+  and updating while the DOM adventures are visible.
+- Pip is an original mint-green space dinosaur, drawn in four SVG poses. Direct
+  taps and the feather cause brief laughing expressions, feather motion and
+  synthesized musical giggles. High fives raise his hand with a sparkle. Hats
+  cycle party hat, crown, rainbow and none. Floating objects pop and play notes.
+  Reactions replace their sound phrase (maximum 15 oscillator handles), throttle
+  extremely fast input, vary their messages and remain interruptible. They are
+  synthesized giggles, not recorded human laughter. No AI image assets or third
+  party game artwork were imported.
+- Learning games share Pip, recorded instructions, generous native buttons,
+  helpful hints, no penalties or timers, completion/replay and a sticker map:
+  Meet all eight planets; order 3, 4 or all 8 from the Sun using pointer dragging
+  or tap-select then tap-space; five increasingly varied detective clues;
+  match Saturn’s rings, Earth’s Moon and Jupiter’s storm; match tiles to spell
+  MARS, EARTH and SATURN. This is letter matching, not handwriting tracing.
+  Sizes and spacing are explicitly simplified. Saturn starts its match without
+  rings and gains its original ring portrait on success.
+- `adventure.js` generates portraits from the existing Canvas renderer at launch.
+  Its mode/round state is private to its IIFE. Stickers and mute are saved under
+  `planet-pals-journey` in localStorage with safe fallbacks for unavailable or
+  corrupt storage. Challenges reset on Home/replay; saved stickers remain.
+  The sticker map has a Grown-ups section with a two-step collection reset.
+- Global Home acts on pointerdown and supports keyboard click. Global mute routes
+  all synth and recorded audio through a shared master gain in `game.js`, stops
+  active phrases, holds, songs and speech, and is moved to the top center over
+  original Canvas modes so it cannot cover Talk/Music or Find’s speaker.
+- New screens have semantic controls, live feedback, keyboard focus indicators,
+  correct-answer check marks, reduced-motion CSS, scrolling portrait layouts and
+  touch pointer capture for planet dragging. The old Canvas games retain their
+  existing touch-first interactions and landscape preference; they do not gain a
+  complete keyboard or screen-reader interface in this pass.
+- New recorded speech is declared in `tools/journey-voice.tsv`. Generate only the
+  27 new clips with `sh tools/make-journey-voice.sh`; the original full generation
+  script now invokes it too. Voice synthesis/encoding can require host access to
+  system speech and codec services. All 27 clips were generated and durations
+  checked. No runtime speechSynthesis dependency was added.
+- Worker v13 caches new scripts, styles, SVG poses and prompts. Activation now
+  deletes only older Planet Pals caches; failed HTTP responses do not overwrite
+  valid cached responses. Existing network-first behavior is preserved.
+- Validation: all 25 Node tests pass. Browser play-throughs covered all parade
+  levels, all detective/matching/spelling rounds, all planet introductions,
+  wrong answers, hints, completion, replay, toys, pointer dragging, keyboard
+  letter activation, mute and saved stickers. Inspected 1024×768 landscape and
+  390×844 narrow layouts with no horizontal overflow in new activities. The
+  original song playback, play-along and Talk switch were also checked. Stopping
+  the local server and reloading confirmed cached offline play. Browser console
+  had no warnings/errors during these checks. See `docs/playtest-2026-10-18.md`.
+- Physical iPad/Fire touch, sound quality, performance, installed-PWA update
+  behavior and the boys’ reactions remain untested. This pass is local only;
+  no commit, push or live-site publication was performed.

@@ -39,4 +39,5 @@ clip fact-Saturn "Saturn has big, beautiful rings."
 clip fact-Uranus "Uranus spins on its side."
 clip fact-Neptune "Neptune is very cold and windy."
 rm -f /tmp/pp-voice.aiff
+RATE="$RATE" VOICE="$VOICE" sh "$(dirname "$0")/make-journey-voice.sh"
 ls "$out" | wc -l

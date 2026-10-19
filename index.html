@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <title>Planet Pals</title>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#060a1f">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#fbf8f0">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Planet Pals">
@@ -27,9 +27,14 @@
   }
   canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
 </style>
+<link rel="stylesheet" href="adventure.css">
+<link rel="preload" as="image" href="art/pip-laugh.svg">
+<link rel="preload" as="image" href="art/pip-curious.svg">
+<link rel="preload" as="image" href="art/pip-five.svg">
 </head>
 <body>
 <canvas id="c"></canvas>
 <script src="game.js"></script>
+<script src="adventure.js"></script>
 </body>
 </html>

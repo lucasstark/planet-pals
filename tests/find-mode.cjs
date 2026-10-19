@@ -304,3 +304,19 @@ test('every planet and Sun can be selected, tickled, dressed up and resized', ()
     assert.equal(run('state.silly.friend?.name || "Sun"'), ['Sun','Mercury','Venus','Earth','Mars','Jupiter','Saturn','Uranus','Neptune'][i]);
   }
 });
+
+test('global mute releases active play and keeps every audio path behind a master gain', () => {
+  const { run } = game();
+  run(`setMode('silly'); sillyTap(state.sun.x, state.sun.y, 51);`);
+  run('setGameMuted(true)');
+  assert.equal(run('gameMuted'), true);
+  assert.equal(run('state.silly.sounds.length'), 0);
+  assert.equal(run('state.holds.size'), 0);
+  assert.equal(run('state.echo.playing'), null);
+  run('setGameMuted(false)');
+  assert.equal(run('gameMuted'), false);
+  // Only the master node connects directly to the device output.
+  const source=fs.readFileSync('game.js','utf8');
+  assert.equal((source.match(/\.connect\(audio\.destination\)/g)||[]).length,1);
+  assert.equal((source.match(/connect\(masterAudio \|\| audio\.destination\)/g)||[]).length,4);
+});

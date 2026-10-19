@@ -368,12 +368,24 @@ function shuffle(arr) {
 
 // ---------- Sound ----------
 let audio = null;
+let masterAudio = null;
+let gameMuted = false;
+function setGameMuted(muted) {
+  gameMuted = muted;
+  if (muted) quietGame();
+  if (masterAudio && audio) masterAudio.gain.setValueAtTime(muted ? 0 : 0.8, audio.currentTime);
+}
 const SCALE = [523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1174.66, 1318.51, 1567.98];
 
 function unlockAudio() {
   if (!audio) {
     const AC = window.AudioContext || window.webkitAudioContext;
-    if (AC) audio = new AC();
+    if (AC) {
+      audio = new AC();
+      masterAudio = audio.createGain();
+      masterAudio.gain.value = gameMuted ? 0 : 0.8;
+      masterAudio.connect(audio.destination);
+    }
   }
   if (audio && audio.state === 'suspended') audio.resume();
 }
@@ -389,7 +401,7 @@ function tone(freq, when = 0, dur = 0.5, vol = 0.2, type = 'sine', endFreq = nul
   g.gain.setValueAtTime(0.0001, t0);
   g.gain.exponentialRampToValueAtTime(vol, t0 + 0.02);
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  o.connect(g).connect(audio.destination);
+  o.connect(g).connect(masterAudio || audio.destination);
   o.start(t0);
   o.stop(t0 + dur + 0.05);
   return { stop() { o.stop(); } };
@@ -409,7 +421,7 @@ const sfx = {
     o.frequency.exponentialRampToValueAtTime(45, t0 + 0.35);
     g.gain.setValueAtTime(0.6, t0);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
-    o.connect(g).connect(audio.destination);
+    o.connect(g).connect(masterAudio || audio.destination);
     o.start(t0);
     o.stop(t0 + 0.55);
   },
@@ -436,7 +448,7 @@ function startSustain(freq) {
   g2.gain.value = 0.25;
   o.connect(g);
   o2.connect(g2).connect(g);
-  g.connect(audio.destination);
+  g.connect(masterAudio || audio.destination);
   o.start(t0);
   o2.start(t0);
   lfo.start(t0);
@@ -486,7 +498,7 @@ function stopSpeaking() {
 
 // Plays the clips one after another; a new say() cuts off the previous one.
 async function say(...keys) {
-  if (!audio) return;
+  if (!audio || gameMuted) return;
   stopSpeaking();
   const gen = sayGen;
   for (const key of keys) {
@@ -496,7 +508,7 @@ async function say(...keys) {
     await new Promise((resolve) => {
       current = audio.createBufferSource();
       current.buffer = buffer;
-      current.connect(audio.destination);
+      current.connect(masterAudio || audio.destination);
       current.onended = resolve;
       // Sample decoded speech at 30 Hz; faces follow actual sound, including pauses.
       const samples = buffer.getChannelData(0);
@@ -1844,9 +1856,11 @@ let last = performance.now();
 function frame(now) {
   const dt = Math.min((now - last) / 1000, 0.05);
   last = now;
-  state.time += dt;
-  update(dt);
-  draw();
+  if (canvas.style?.visibility !== 'hidden') {
+    state.time += dt;
+    update(dt);
+    draw();
+  }
   requestAnimationFrame(frame);
 }
 
