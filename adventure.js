@@ -32,7 +32,7 @@
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem('planet-pals-journey') || '{}') || {}; } catch (_) { /* private browsing still plays */ }
   const collected = new Set(Array.isArray(saved.stickers) ? saved.stickers.filter(n => names.includes(n)) : []);
-  let muted = saved.muted === true;
+  let muted = typeof soundMode !== 'undefined' ? soundMode === 'off' : saved.muted === true;
   let screen = 'home', round = 0, solved = false, selected = null, placed = [], letters = [], hat = 0;
   let reactionTimer, voiceTimer, reactionCount = 0, soundNodes = [], lastReaction = 0, drag = null, suppressClickUntil = 0;
   let orderLevel = 0, questionList = [];
@@ -294,7 +294,9 @@
   const homeButton=document.querySelector('#journey-home');
   homeButton.addEventListener('pointerdown',e=>{if(e.button===0)go('home');});
   homeButton.addEventListener('click',()=>{if(screen!=='home')go('home');});
-  function applyMute() {setGameMuted(muted);const b=document.querySelector('#mute');b.textContent=muted?'♫ Sound off':'♫ Sound on';b.setAttribute('aria-pressed',String(muted));}
+  function updateSoundButton() {const b=document.querySelector('#mute');b.textContent=muted?'♫ Sound off':'♫ Sound on';b.setAttribute('aria-pressed',String(muted));}
+  function applyMute() { setGameMuted(muted); updateSoundButton(); }
+  window.onPlanetSoundChange = mode => { muted = mode === 'off'; if (muted) { clearTimeout(voiceTimer); stopPhrase(); } updateSoundButton(); save(); };
   document.querySelector('#mute').addEventListener('click',()=>{muted=!muted;cleanup();applyMute();save();});
   window.addEventListener('resize',()=>{cancelDrag();stopPhrase();});
   window.addEventListener('blur',()=>{clearTimeout(voiceTimer);stopPhrase();cancelDrag();});

@@ -6,8 +6,8 @@ const fs = require('node:fs');
 function worker(fetcher = async () => ({ ok: true, clone: () => 'copy' })) {
   const handlers = {}, added = [], deleted = [], written = [];
   const sandbox = { URL, fetch: fetcher, self: {location:{origin:'https://example.test'}, addEventListener:(n,f)=>handlers[n]=f,skipWaiting(){},clients:{claim(){}}}, caches: {
-    open:async()=>({addAll:async files=>added.push(...files),put:async(...args)=>written.push(args)}),
-    keys:async()=>['another-app-v1','planet-pals-v12','planet-pals-v13'], delete:async k=>deleted.push(k),match:async()=> 'offline response'
+    open:async()=>({addAll:async files=>added.push(...files),put:async(...args)=>written.push(args),match:async()=> 'offline response'}),
+    keys:async()=>['another-app-v1','planet-pals-v12','planet-pals-v16'], delete:async k=>deleted.push(k),match:async()=> 'offline response'
   }};
   vm.runInNewContext(fs.readFileSync('sw.js','utf8'),sandbox);
   async function event(name, extra={}) {

@@ -24,7 +24,7 @@ during the handoff. Keep this guide current when architecture or workflows chang
 - `art/pip*.svg`: original vector companion, laughing/curious faces and high five.
 - `manifest.json`: fullscreen, landscape-oriented PWA; relative start URL/scope.
 - `sw.js`: network-first GET caching, precaches app files, companion art and all 75 voice clips.
-  Local adventure version: `planet-pals-v13` (not published during this pass). Registers on HTTPS or `localhost`.
+  Current combined release: `planet-pals-v16`. Registers on HTTPS or `localhost`.
 - `voice/*.m4a`: bundled speech, decoded and played through Web Audio.
 - `tools/make-voice.sh`: macOS `say` + `afconvert` voice generation. Run from root
   with `sh tools/make-voice.sh`; optional `VOICE` and `RATE` environment variables
@@ -314,6 +314,102 @@ This section supersedes the earlier hold-to-tickle interaction descriptions.
   planet names and arranging planets in solar order were discussed as later
   activities, not implemented or authorized as part of this prototype.
 
+## Playground refinement release candidate (2026-10-16)
+
+- The menu now calls Silly **Playground** and shows Sun, Earth, and Saturn together.
+  Internal mode remains `silly`. Home uses original Canvas artwork consistently.
+  Character names stay above the hero; short reactions appear below it.
+- Feather animation travels from its toy to the selected character for .35 seconds,
+  tickles for 1.5 seconds with synchronized softer layered synthesized laughter,
+  then returns for .35 seconds. `featherAt` owns the sequence; hero taps and gifts
+  cancel it. Toys catch the current rotation and release gesture ownership.
+- Center-origin swipes retain horizontal mapping for their full gesture. Angular
+  drags also use horizontal mapping on segments crossing the center, preventing
+  half-turn jumps. Secondary fingers join an active drag without competing tap
+  sounds or automatic spins; ownership transfers on release.
+- `ownTransient` tracks short tones and drum sounds, including future notes, in a
+  bounded 48-handle registry. Navigation, resize, blur and hiding stop them;
+  active sounds fade briefly, scheduled sounds cancel, completed nodes disconnect.
+  Sustained notes and recorded speech retain their existing ownership. Ripples
+  and shooting stars are capped at 24 each; particles retain their existing cap.
+- Service-worker release cache is `planet-pals-v13`; voice assets are unchanged.
+  No dependencies, framework, or build step added. All 22 Node regressions and
+  syntax checks pass. Chromium checks at 1024x768 and 1280x800 exercised the nine
+  selectors, dragging, feather/gift interruption, Talk, songs and Find, with no
+  console errors. All 54 offline assets cached; offline app and greeting requests
+  passed. Real browser blur, resize and Home stopped scheduled audio.
+- Forced worker replacement from v12 to v13 followed by offline reload passed.
+  A direct `registration.update()` did not finish within the test window; normal
+  update timing and installed-PWA behavior still require physical-device testing.
+  Headless validation does not establish perceived laughter quality, real tablet
+  multitouch, performance or speaker balance.
+- See docs/release-review.md for evidence and docs/learning-roadmap.md for ordering
+  then tracing. These activities remain future work. Release is uncommitted and
+  undeployed; obtain the parent's deployment instruction before publishing main.
+
+## Spin-and-play release v14 (2026-10-16)
+
+This section supersedes the v13 release-candidate status above. The parent asked
+for a reviewed agent-led enhancement and gave the lead authority to execute.
+
+- Deliberate spinning now performs short bundled “Whoa!” / “Whee!” reactions.
+  `spinSpeed` smooths velocity; 100 ms of meaningful motion avoids classifying
+  every fast start as slow. Bands have hysteresis and a 1.4-second voice cooldown.
+  A short .65-second coast window can complete a reaction; idle time never starts
+  a new conversation. `reactionCurrent` owns one buffer source, with no download
+  queue. Catching, cancel, toys, friend selection and lifecycle cleanup stop it.
+- Mouth shapes and small local arcs follow spin intensity. Captions are separate
+  from audio availability. Full rotating silhouettes (rings/rays/hats) fit between
+  heading and caption; hit targets remain large and stationary.
+- A drawn bubble wand makes four large, gently moving bubbles in clear side lanes.
+  Taps pop them with notes. New sets require tapping the wand; no score, timeout,
+  automatic mode change, or infinite spawning. Toys replace each other's transient
+  states. Hero/dock/toy/navigation hit regions take priority.
+- A visible Sound/Soft/Off control appears across activities and safely remembers
+  preference in localStorage. `audioOutput()` supplies one master gain to every
+  synth, held tone, narration and reaction, including already-playing sounds.
+- AudioContext creation requests interactive latency; gesture unlocking resumes
+  suspended or interrupted contexts and handles rejected resumes. Failed clip
+  fetches/decodes can retry after five seconds on later gestures. The three tiny
+  reactions are requested first and decoded ahead of use. Narration tempo and all
+  original 48 voice assets remain unchanged.
+- New voice keys: `reaction-whoa`, `reaction-whee`, `reaction-giggle`. The last is
+  synthesized “Hee hee hee!”, not recorded human laughter. `tools/make-reactions.py`
+  regenerates only these three using build-time Kokoro; no model/runtime dependency
+  is shipped to the tablet. See docs/reaction-audio-provenance.md and its license
+  files. The existing macOS `tools/make-voice.sh` still owns the original 48 clips.
+- Worker cache `planet-pals-v14` holds 57 assets. Activation preserves unrelated
+  origin caches; unsuccessful fetches cannot poison good offline copies. Partial
+  audio responses are not cached. Offline unknown resources fail explicitly.
+- Run **node --test tests/*.cjs** (37 tests), plus existing syntax checks. New files
+  tests/playground-reactions.cjs and tests/service-worker.cjs cover reaction timing,
+  sound settings, retry, interruption, bubble ownership and worker lifecycle.
+- Chromium at 1024x768 and 1280x800 passed slow/fast real-pointer spins, cooldown,
+  bubble popping, sound persistence, all friends, feather/gift, existing modes,
+  gesture audio unlocking, offline decode, and all 57 cached files. A forced v12
+  to v14 worker replacement and offline reload passed. Screenshots were reviewed.
+  Physical iPad/Fire latency, sound preference, multitouch, and ordinary installed
+  PWA update timing remain unverified. Current environment blocks Apple storefront
+  and direct github.io reads; research/access limitations are documented honestly.
+- Design/research: docs/enhancement-plan.md, docs/dinosaur-research.md and
+  docs/ipad-audio-research.md. See docs/release-review.md for verification and
+  docs/learning-roadmap.md for later ordering/tracing; neither new activity was added.
+
+## Phone play and audio recovery v15 (2026-10-18)
+
+The user's reported iPhone compression makes phone layouts a current priority,
+superseding the initial tablet-only prioritization. Preserve the familiar game.
+`isPortrait`, `friendDock`, `friendDockTop` share compact layout geometry;
+Explore compact targets are stationary and may have no `orbit` property.
+`device-audio.js` supplies gesture-only `DeviceAudio.prepare()` and the accessible
+parent sound dialog. Load it before game.js; its event handlers use game globals
+only after startup. The canvas uses its actual CSS bounds and all safe-area vars.
+The manifest now allows either orientation; no native app migration is included.
+Gift accessories persist until another toy/friend/lifecycle clears them. Worker
+v15 precaches 58 assets including the helper. See docs/phone-play-release.md.
+Physical iPad sound recovery remains unverified; distinguish it from successful
+browser interaction, offline loading and AudioContext state checks.
+
 
 ## Pip’s Space Club (2026-10-18, local development)
 
@@ -371,3 +467,16 @@ This section supersedes the earlier hold-to-tickle interaction descriptions.
 - Physical iPad/Fire touch, sound quality, performance, installed-PWA update
   behavior and the boys’ reactions remain untested. This pass is local only;
   no commit, push or live-site publication was performed.
+
+## Combined release v16 (2026-10-19)
+
+The user requested deployment of Pip’s Space Club. This release combines the
+adventures above with the published v15 phone layouts, spin reactions, bubbles,
+and parent sound-recovery dialog. A shared master gain and sound preference serve
+both interfaces; the canvas retains Sound/Soft/Off and the adventure mute respects
+the saved Soft level. Worker v16 includes both sets of assets. Physical-device
+audio and installed-PWA verification remain outstanding.
+
+Combined verification: all 48 Node tests and JavaScript syntax checks pass. The
+merged browser preview opens the parent dialog, synchronizes mute with adventures,
+and launches the original nine-friend playground without console warnings/errors.

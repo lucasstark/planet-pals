@@ -2159,3 +2159,9 @@ h1 em {
     left: 25%;
   }
 }
+
+/* The original canvas already has Sound/Soft/Off; keep parent help reachable. */
+.global-tools.on-canvas #mute { display:none; }
+#grown-ups { z-index:30; top:calc(var(--safe-top) + 12px); }
+
+.global-tools.on-canvas #journey-home { width:76px; min-width:76px; padding:10px 4px; }

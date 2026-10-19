@@ -143,6 +143,7 @@ const state = {
 };
 
 const HOME = { x: 46, y: 46, r: 32 };
+let safeBottom = 0, safeLeft = 0, safeRight = 0;
 let safeTop = 0; // iPad home-screen apps draw under the status bar.
 
 // ---------- Drawing helpers ----------
@@ -315,8 +316,9 @@ function drawSun(sun) {
   ctx.fillStyle = body;
   circle(sun.x, sun.y, r);
 
-  const fr = r * 0.28;
-  drawFace(sun.x + r * 0.8, sun.y - r * 0.05, fr, blinkFor(sun.seed), 0, t - sun.popAt < 1.5, performanceFor(sun).mouth);
+  const compact = isPortrait() || H < 500;
+  const fr = r * (compact ? .8 : .28);
+  drawFace(sun.x + (compact ? 0 : r * .8), sun.y - r * 0.05, fr, blinkFor(sun.seed), 0, t - sun.popAt < 1.5, performanceFor(sun).mouth);
 }
 
 // ---------- Animation helpers ----------
@@ -354,6 +356,7 @@ function burst(x, y, color, n) {
 function shootingStar(x, y) {
   const a = Math.PI * (0.15 + Math.random() * 0.2);
   const dir = Math.random() < 0.5 ? 1 : -1;
+  if (state.shooting.length >= 24) state.shooting.shift();
   state.shooting.push({ x, y, vx: Math.cos(a) * 700 * dir, vy: Math.sin(a) * 700, life: 0, max: 0.7 });
 }
 
@@ -368,26 +371,97 @@ function shuffle(arr) {
 
 // ---------- Sound ----------
 let audio = null;
-let masterAudio = null;
-let gameMuted = false;
-function setGameMuted(muted) {
-  gameMuted = muted;
-  if (muted) quietGame();
-  if (masterAudio && audio) masterAudio.gain.setValueAtTime(muted ? 0 : 0.8, audio.currentTime);
+let masterGain = null;
+let soundMode = 'normal';
+try { const saved = localStorage.getItem('planet-pals-sound'); if (['normal', 'soft', 'off'].includes(saved)) soundMode = saved; } catch (_) {}
+let gameMuted = soundMode === 'off';
+let unmutedMode = soundMode === 'soft' ? 'soft' : 'normal';
+function setGameMuted(muted) { setSoundMode(muted ? 'off' : unmutedMode); }
+function audioOutput() {
+  if (!masterGain) {
+    masterGain = audio.createGain();
+    masterGain.gain.setValueAtTime(soundMode === 'off' ? 0 : soundMode === 'soft' ? .3 : 1, audio.currentTime);
+    masterGain.connect(audio.destination);
+  }
+  return masterGain;
+}
+function setSoundMode(mode) {
+  if (!['normal', 'soft', 'off'].includes(mode)) return;
+  soundMode = mode;
+  gameMuted = mode === 'off';
+  if (!gameMuted) unmutedMode = mode;
+  if (gameMuted) quietGame();
+  window.onPlanetSoundChange?.(mode);
+  try { localStorage.setItem('planet-pals-sound', mode); } catch (_) {}
+  if (audio) {
+    const gain = audioOutput().gain, now = audio.currentTime;
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(gain.value, now);
+    gain.linearRampToValueAtTime(mode === 'off' ? 0 : mode === 'soft' ? .3 : 1, now + .025);
+  }
+}
+function soundControl() { return { x: safeLeft + (isPortrait() ? 112 : 132), y: HOME.y, r: isPortrait() ? 26 : 30 }; }
+function drawSoundControl() {
+  const { x, y, r } = soundControl();
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = '#23334e'; circle(0, 0, r);
+  ctx.strokeStyle = '#a7d9ef'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#d9f5ff'; ctx.beginPath();
+  ctx.moveTo(-17, -6); ctx.lineTo(-10, -6); ctx.lineTo(0, -15); ctx.lineTo(0, 15); ctx.lineTo(-10, 6); ctx.lineTo(-17, 6); ctx.closePath(); ctx.fill();
+  ctx.lineWidth = 3; ctx.lineCap = 'round';
+  if (soundMode === 'off') { ctx.beginPath(); ctx.moveTo(8, -7); ctx.lineTo(20, 7); ctx.moveTo(20, -7); ctx.lineTo(8, 7); ctx.stroke(); }
+  else for (let i = 0; i < (soundMode === 'normal' ? 2 : 1); i++) { ctx.beginPath(); ctx.arc(0, 0, 12 + i * 8, -.65, .65); ctx.stroke(); }
+  ctx.font = '600 12px system-ui'; ctx.textAlign = 'center'; ctx.fillText(soundMode === 'normal' ? 'Sound' : soundMode === 'soft' ? 'Soft' : 'Off', 0, 45);
+  ctx.restore();
+}
+// Short effects share lifecycle ownership, including notes scheduled in the future.
+const transientSounds = new Set();
+function ownTransient(o, g, startsAt, gainAt) {
+  let stopped = false;
+  const sound = { stop() {
+    if (stopped) return;
+    stopped = true;
+    transientSounds.delete(sound);
+    const now = audio.currentTime;
+    if (now < startsAt) {
+      g.gain.cancelScheduledValues(now);
+      g.gain.setValueAtTime(0, now);
+      o.stop(now);
+      return;
+    }
+    // Preserve the current envelope value before a short, click-free release.
+    if (g.gain.cancelAndHoldAtTime) g.gain.cancelAndHoldAtTime(now);
+    else {
+      g.gain.cancelScheduledValues(now);
+      g.gain.setValueAtTime(gainAt(now), now);
+    }
+    g.gain.linearRampToValueAtTime(0, now + .015);
+    o.stop(now + .02);
+  } };
+  o.onended = () => {
+    stopped = true;
+    transientSounds.delete(sound);
+    o.disconnect();
+    g.disconnect();
+  };
+  if (transientSounds.size >= 48) transientSounds.values().next().value.stop();
+  transientSounds.add(sound);
+  return sound;
+}
+function stopTransientSounds() {
+  for (const sound of [...transientSounds]) sound.stop();
 }
 const SCALE = [523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1174.66, 1318.51, 1567.98];
 
 function unlockAudio() {
+  if (typeof DeviceAudio !== 'undefined') DeviceAudio.prepare();
   if (!audio) {
     const AC = window.AudioContext || window.webkitAudioContext;
-    if (AC) {
-      audio = new AC();
-      masterAudio = audio.createGain();
-      masterAudio.gain.value = gameMuted ? 0 : 0.8;
-      masterAudio.connect(audio.destination);
-    }
+    if (AC) audio = new AC({ latencyHint: 'interactive' });
   }
-  if (audio && audio.state === 'suspended') audio.resume();
+  if (audio && (audio.state === 'suspended' || audio.state === 'interrupted')) {
+    try { Promise.resolve(audio.resume()).catch(() => {}); } catch (_) {}
+  }
 }
 
 function tone(freq, when = 0, dur = 0.5, vol = 0.2, type = 'sine', endFreq = null) {
@@ -401,10 +475,14 @@ function tone(freq, when = 0, dur = 0.5, vol = 0.2, type = 'sine', endFreq = nul
   g.gain.setValueAtTime(0.0001, t0);
   g.gain.exponentialRampToValueAtTime(vol, t0 + 0.02);
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  o.connect(g).connect(masterAudio || audio.destination);
+  o.connect(g).connect(audioOutput());
   o.start(t0);
   o.stop(t0 + dur + 0.05);
-  return { stop() { o.stop(); } };
+  return ownTransient(o, g, t0, now => {
+    const age = Math.max(0, now - t0);
+    if (age < .02) return .0001 * Math.pow(vol / .0001, age / .02);
+    return vol * Math.pow(.0001 / vol, Math.min(1, (age - .02) / (dur - .02)));
+  });
 }
 
 const sfx = {
@@ -421,9 +499,10 @@ const sfx = {
     o.frequency.exponentialRampToValueAtTime(45, t0 + 0.35);
     g.gain.setValueAtTime(0.6, t0);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
-    o.connect(g).connect(masterAudio || audio.destination);
+    o.connect(g).connect(audioOutput());
     o.start(t0);
     o.stop(t0 + 0.55);
+    return ownTransient(o, g, t0, now => .6 * Math.pow(.0001 / .6, Math.min(1, Math.max(0, now - t0) / .5)));
   },
 };
 
@@ -448,7 +527,7 @@ function startSustain(freq) {
   g2.gain.value = 0.25;
   o.connect(g);
   o2.connect(g2).connect(g);
-  g.connect(masterAudio || audio.destination);
+  g.connect(audioOutput());
   o.start(t0);
   o2.start(t0);
   lfo.start(t0);
@@ -468,22 +547,43 @@ function startSustain(freq) {
 // speechSynthesis is silent on the kids' devices. Keys map to voice/<key>.m4a.
 const clips = new Map();
 
+const readyClips = new Map();
+const clipRetryAt = new Map();
 function loadClip(key) {
+  if (!audio) return Promise.resolve(null);
   if (!clips.has(key)) {
-    clips.set(
-      key,
-      fetch(`voice/${key}.m4a`)
-        .then((r) => r.arrayBuffer())
-        .then((buf) => audio.decodeAudioData(buf))
-        .catch(() => null)
-    );
+    if (Date.now() < (clipRetryAt.get(key) || 0)) return Promise.resolve(null);
+    clips.set(key, fetch(`voice/${key}.m4a`)
+      .then(r => { if (!r.ok) throw new Error('Voice HTTP ' + r.status); return r.arrayBuffer(); })
+      .then(buf => audio.decodeAudioData(buf))
+      .then(buffer => { readyClips.set(key, buffer); clipRetryAt.delete(key); return buffer; })
+      .catch(() => { clips.delete(key); clipRetryAt.set(key, Date.now() + 5000); return null; }));
   }
   return clips.get(key);
 }
-
 function preloadVoice() {
-  ['tap', 'sun', 'expert', 'yay', 'good-job', 'hooray', 'Jettson', 'Langston'].forEach(loadClip);
-  for (const p of PLANETS) ['name', 'fact', 'find', 'found', 'thats'].forEach((k) => loadClip(`${k}-${p.name}`));
+  if (!audio) return;
+  ['reaction-whoa', 'reaction-whee', 'reaction-giggle', 'tap', 'sun', 'expert', 'yay', 'good-job', 'hooray', 'Jettson', 'Langston'].forEach(loadClip);
+  for (const p of PLANETS) ['name', 'fact', 'find', 'found', 'thats'].forEach(k => loadClip(`${k}-${p.name}`));
+}
+// A reaction is immediate or skipped, never queued behind a download.
+let reactionCurrent = null;
+let reactionGeneration = 0;
+function stopReaction() {
+  reactionGeneration++;
+  if (reactionCurrent) { reactionCurrent.stop(); reactionCurrent.disconnect(); }
+  reactionCurrent = null;
+}
+function playReaction(key) {
+  const buffer = readyClips.get(key);
+  if (!audio || !buffer || reactionCurrent) return false;
+  const source = audio.createBufferSource();
+  source.buffer = buffer; source.connect(audioOutput());
+  reactionCurrent = source;
+  const generation = ++reactionGeneration;
+  source.onended = () => { source.disconnect(); if (generation === reactionGeneration) reactionCurrent = null; };
+  source.start();
+  return true;
 }
 
 let sayGen = 0;
@@ -508,8 +608,9 @@ async function say(...keys) {
     await new Promise((resolve) => {
       current = audio.createBufferSource();
       current.buffer = buffer;
-      current.connect(masterAudio || audio.destination);
-      current.onended = resolve;
+      current.connect(audioOutput());
+      const source = current;
+      current.onended = () => { source.disconnect?.(); resolve(); };
       // Sample decoded speech at 30 Hz; faces follow actual sound, including pauses.
       const samples = buffer.getChannelData(0);
       const step = Math.max(1, Math.floor(buffer.sampleRate / 30));
@@ -556,26 +657,32 @@ function drawWord() {
   ctx.lineJoin = 'round';
   ctx.lineWidth = size * 0.16;
   ctx.strokeStyle = '#fffdf5';
-  ctx.strokeText(w.text, W / 2, safeTop + H * 0.14);
+  ctx.strokeText(w.text, W / 2, safeTop + (isPortrait() ? (state.mode === 'find' ? 130 : 110) : H < 500 ? 104 : H * .14));
   ctx.fillStyle = w.color === '#ffffff' ? '#526bd6' : w.color;
-  ctx.fillText(w.text, W / 2, safeTop + H * 0.14);
+  ctx.fillText(w.text, W / 2, safeTop + (isPortrait() ? (state.mode === 'find' ? 130 : 110) : H < 500 ? 104 : H * .14));
   ctx.restore();
 }
 
 // ---------- Layout ----------
 function resize() {
+  stopTransientSounds();
   stopSilly();
   stopSong();
   releaseAllHolds();
   state.echo = { notes: [], lastTapAt: -99, playing: null };
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  W = window.innerWidth;
-  H = window.innerHeight;
+  const bounds = canvas.getBoundingClientRect?.();
+  W = bounds?.width || window.innerWidth;
+  H = bounds?.height || window.innerHeight;
   canvas.width = Math.round(W * dpr);
   canvas.height = Math.round(H * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   safeTop = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-top')) || 0;
+  safeBottom = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom')) || 0;
+  safeLeft = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-left')) || 0;
+  safeRight = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-right')) || 0;
   HOME.y = 46 + safeTop;
+  HOME.x = 46 + safeLeft;
 
   state.stars = Array.from({ length: Math.round((W * H) / 4500) }, () => ({
     x: Math.random() * W,
@@ -595,21 +702,63 @@ function resize() {
   else layoutMenu();
 }
 
+function isPortrait() { return W < 600 && H > W; }
+function friendDockTop() { return H - safeBottom - (isPortrait() ? 156 : Math.max(76, H * .175)); }
+function friendDock() {
+  const portrait = isPortrait(), width = W - safeLeft - safeRight;
+  return Array.from({ length: 9 }, (_, i) => {
+    const cols = portrait ? (i < 5 ? 5 : 4) : 9;
+    const index = portrait && i >= 5 ? i - 5 : i;
+    const row = portrait && i >= 5 ? 1 : 0;
+    const gap = width / cols;
+    const y = portrait ? friendDockTop() + 30 + row * 76 : friendDockTop() + (H - safeBottom - friendDockTop()) * .43;
+    return { x: safeLeft + gap * (index + .5), y, r: Math.min(30, gap * .28, portrait ? 23 : H * .04), hit: Math.min(36, gap * .46), labelY: portrait ? y + 31 : H - safeBottom - 15 };
+  });
+}
+function playgroundTitleY() { return isPortrait() ? safeTop + 125 : safeTop + Math.max(78, H * .15); }
+function playgroundCaptionY() { return isPortrait() ? friendDockTop() - 130 : friendDockTop() - 20; }
+
 function layoutMenu() {
+  if (isPortrait()) {
+    const r = Math.min(W * .19, H * .11);
+    state.menuButtons = [
+      { mode: 'explore', label: 'Explore', x: W * .26, y: H * .72, r },
+      { mode: 'find', label: 'Find it!', x: W * .74, y: H * .72, r },
+      { mode: 'silly', label: 'Playground', x: W * .5, y: H * .4, r: r * 1.35 },
+    ];
+    return;
+  }
   const r = Math.min(W * 0.125, H * 0.21);
   state.menuButtons = [
     { mode: 'explore', label: 'Explore', x: W * 0.2, y: H * 0.57, r },
     { mode: 'find', label: 'Find it!', x: W * 0.5, y: H * 0.57, r },
-    { mode: 'silly', label: 'Silly!', x: W * 0.8, y: H * 0.57, r },
+    { mode: 'silly', label: 'Playground', x: W * 0.8, y: H * 0.57, r },
   ];
 }
 
 function layoutSilly() {
   state.bodies = [];
-  state.sun = { x: W / 2, y: H * .49, r: Math.min(W * .24, H * .23), seed: 1.3, popAt: -99 };
+  state.sun = { x: W / 2, y: isPortrait() ? (playgroundTitleY() + playgroundCaptionY()) / 2 : H * .49, r: Math.min(W * .25, H * .23), seed: 1.3, popAt: -99 };
 }
 
 function layoutExplore() {
+  if (isPortrait() || H < 500) {
+    const portrait = isPortrait();
+    const columns = portrait ? 3 : 9;
+    const rows = portrait ? 3 : 1;
+    const top = portrait ? safeTop + 232 : safeTop + 176;
+    const bottom = songControls().y - 10;
+    const slot = (W - safeLeft - safeRight - 16) / columns;
+    const rowHeight = Math.max(50, bottom - top) / rows;
+    const friends = [null, ...PLANETS].map((planet, index) => {
+      const span = planet?.span || 1;
+      const radius = Math.min(slot * .35 / span, rowHeight * .34, 48);
+      return makeBody(planet, safeLeft + 8 + slot * (index % columns + .5), top + rowHeight * (Math.floor(index / columns) + .5), radius);
+    });
+    state.sun = friends[0];
+    state.bodies = friends.slice(1);
+    return;
+  }
   const sunR = H * 0.55;
   state.sun = { x: -sunR * 0.55, y: H * 0.55, r: sunR, seed: 1.3, popAt: state.sun ? state.sun.popAt : -99 };
 
@@ -648,19 +797,25 @@ function layoutRow(planets, gap, minSize) {
   let x = margin + ((W - 2 * margin) - totalUnits * unit) / 2 + gap * unit;
   state.bodies = planets.map((p, i) => {
     const w = widths[i] * unit;
-    const y = safeTop + H * 0.62 + (i % 2 ? H * 0.09 : -H * 0.09);
-    const body = makeBody(p, x + w / 2, y, Math.max(p.size, minSize) * unit);
+    const y = H < 500 ? safeTop + (H - safeTop - safeBottom) * .59 : safeTop + H * .62 + (i % 2 ? H * .09 : -H * .09);
+    const radius = Math.min(Math.max(p.size, minSize) * unit, (H - safeBottom - 54 - y) / p.span);
+    const body = makeBody(p, x + w / 2, y, radius);
     x += w + gap * unit;
     return body;
   });
 }
 
 function layoutFind() {
+  if (isPortrait()) {
+    state.bodies = state.find.choices.map((p, i) => makeBody(p, W * (.26 + .48 * (i % 2)), H * (.43 + .31 * Math.floor(i / 2)), Math.min(W * .18 / p.span, H * .12)));
+    return;
+  }
   layoutRow(state.find.choices, 0.4, 0.75);
 }
 
 // ---------- Modes ----------
 function setMode(mode) {
+  stopTransientSounds();
   stopSilly();
   state.silly = null;
   stopSong();
@@ -679,7 +834,7 @@ function setMode(mode) {
     layoutExplore();
     if (state.talk) say('tap');
   } else if (mode === 'silly') {
-    state.silly = { count: 0, streak: 0, lastTap: -99, effect: 0, sounds: [], touches: new Map(), tickling: false, laughAt: 0, spinAt: -99, spins: 0, surprise: 0, note: 0, accessoryUntil: -99, tickleUntil: -99, angle: 0, velocity: 0, dragId: null, friend: null };
+    state.silly = { count: 0, streak: 0, lastTap: -99, effect: 0, sounds: [], touches: new Map(), tickling: false, laughAt: 0, spinAt: -99, spins: 0, surprise: 0, note: 0, accessoryUntil: -99, tickleUntil: -99, featherAt: -99, angle: 0, velocity: 0, dragId: null, friend: null, spinSpeed: 0, spinBand: 0, reactionAt: -99, reactionVisualAt: -99, spinActiveAt: -99, coastUntil: -99, bubbles: [] };
     layoutSilly();
   } else if (mode === 'find') {
     state.find = null;
@@ -690,19 +845,33 @@ function setMode(mode) {
 }
 
 function ripple(x, y, color) {
+  if (state.ripples.length >= 24) state.ripples.shift();
   state.ripples.push({ x, y, color, life: 0, max: 0.9 });
 }
 
-// ---------- Silly Sun: musical friend, finger spins, and two toy props ----------
+// ---------- Playground: musical friends, expressive spins, and three toys ----------
 function stopSillySounds() {
   if (!state.silly) return;
   for (const sound of state.silly.sounds) sound?.stop();
   state.silly.sounds = [];
 }
 
+// A new direct action owns the reaction; an old feather cannot steal its audio.
+function cancelSillyFeather() {
+  const silly = state.silly;
+  stopReaction();
+  silly.featherAt = silly.tickleUntil = -99;
+  silly.tickling = false;
+  stopSillySounds();
+}
+
 function stopSilly() {
   if (!state.silly) return;
   stopSillySounds();
+  stopReaction();
+  state.silly.spinSpeed = state.silly.spinBand = 0;
+  state.silly.coastUntil = state.silly.spinActiveAt = -99;
+  state.silly.bubbles = [];
   state.silly.touches.clear();
   state.silly.tickling = false;
   state.silly.streak = 0;
@@ -710,7 +879,7 @@ function stopSilly() {
   state.silly.spinAt = -99;
   state.silly.angle = state.silly.velocity = 0;
   state.silly.dragId = null;
-  state.silly.tickleUntil = -99;
+  state.silly.tickleUntil = state.silly.featherAt = -99;
   state.silly.accessoryUntil = -99;
 }
 
@@ -727,14 +896,28 @@ function sillyTap(x, y, pointerId) {
   }
   const toy = sillyToys().find(toy => dist(x, y, toy.x, toy.y) <= toy.r + 10);
   if (toy) {
-    if (toy.kind === 'feather') {
+    cancelSillyFeather();
+    silly.angle = sillyRotation();
+    silly.spinAt = -99;
+    silly.velocity = 0;
+    silly.touches.clear();
+    silly.dragId = null;
+    silly.bubbles = [];
+    silly.accessoryUntil = -99;
+    silly.spinSpeed = silly.spinBand = 0;
+    silly.coastUntil = silly.spinActiveAt = -99;
+    if (toy.kind === 'bubbles') {
+      makeBubbles();
+      state.word = null;
+    } else if (toy.kind === 'feather') {
+      silly.featherAt = state.time;
       silly.tickleUntil = state.time + 2.2;
-      silly.laughAt = state.time;
-      showWord('Hee hee hee!', '#ffe497');
+      silly.laughAt = state.time + .35;
+      state.word = null;
       updateSilly(0);
     } else {
       silly.surprise = silly.spins++ % 3;
-      silly.accessoryUntil = state.time + 5;
+      silly.accessoryUntil = Infinity;
       sun.popAt = state.time;
       burst(sun.x, sun.y, '#ff99cb', 24);
       showWord('Ta-da!', '#ffe497');
@@ -744,12 +927,28 @@ function sillyTap(x, y, pointerId) {
     return;
   }
   if (dist(x, y, sun.x, sun.y) > sun.r * 1.4) {
+    const bubble = silly.bubbles.find(b => { const pos = bubblePosition(b); return dist(x, y, pos.x, pos.y) <= b.r + 12; });
+    if (bubble) {
+      silly.bubbles = silly.bubbles.filter(b => b !== bubble);
+      const pos = bubblePosition(bubble);
+      tone(SCALE[bubble.note], 0, .35, .12);
+      burst(pos.x, pos.y, '#afefff', 8);
+      return;
+    }
     shootingStar(x, y); return;
   }
+  const touch = { x, y, startX: x, startY: y, at: null, dragging: false, lastMove: -99, centerSwipe: dist(x, y, sun.x, sun.y) < sun.r * .25 };
+  if (silly.touches.get(silly.dragId)?.dragging) {
+    silly.touches.set(pointerId, touch);
+    return;
+  }
+  cancelSillyFeather();
+  silly.spinSpeed = silly.spinBand = 0;
+  silly.coastUntil = silly.spinActiveAt = -99;
   const streak = state.time - silly.lastTap < 1.2 ? silly.streak + 1 : 1;
   // Replace the last sound so rapid or multi-finger mashing stays bounded.
   stopSillySounds();
-  silly.touches.set(pointerId, { x, y, startX: x, startY: y, at: null, dragging: false, lastMove: -99 });
+  silly.touches.set(pointerId, touch);
   if (silly.dragId === null) silly.dragId = pointerId;
   silly.streak = streak >= 6 ? 0 : streak;
   silly.lastTap = state.time;
@@ -796,12 +995,18 @@ function sillyDrag(e) {
       silly.spinAt = -99;
       silly.velocity = 0;
       silly.streak = 0;
+      stopSillySounds();
     }
     if (touch.dragging) {
       const before = Math.atan2(touch.y - sun.y, touch.x - sun.x);
       const after = Math.atan2(y - sun.y, x - sun.x);
       // Near the middle, a sideways swipe still gives the Sun a useful turn.
-      const delta = Math.min(dist(x, y, sun.x, sun.y), dist(touch.x, touch.y, sun.x, sun.y)) < sun.r * .25
+      const dx = x - touch.x, dy = y - touch.y;
+      const length2 = dx * dx + dy * dy;
+      const along = length2 ? Math.max(0, Math.min(1,
+        ((sun.x - touch.x) * dx + (sun.y - touch.y) * dy) / length2)) : 0;
+      const crossesCenter = dist(touch.x + along * dx, touch.y + along * dy, sun.x, sun.y) < sun.r * .25;
+      const delta = touch.centerSwipe || crossesCenter
         ? (x - touch.x) / sun.r
         : Math.atan2(Math.sin(after - before), Math.cos(after - before));
       const dt = Math.max(.008, Math.min(.08, touch.at === null ? .016 : (at - touch.at) / 1000));
@@ -819,7 +1024,9 @@ function endSillyTouch(e) {
   const touch = silly.touches.get(e.pointerId);
   silly.touches.delete(e.pointerId);
   if (silly.dragId !== e.pointerId) return;
-  const cancelled = e.type === 'pointercancel' || e.type === 'pointerleave';
+  const cancelled = e.type === 'pointercancel' || e.type === 'pointerleave' || e.type === 'lostpointercapture';
+  silly.coastUntil = cancelled ? -99 : state.time + .65;
+  if (cancelled) { stopReaction(); silly.spinSpeed = silly.spinBand = 0; silly.spinActiveAt = -99; }
   if (cancelled || !touch?.dragging || state.time - touch.lastMove > .12) silly.velocity = 0;
   // One finger owns rotation; another resting finger can take over smoothly.
   const next = silly.touches.entries().next().value;
@@ -827,6 +1034,7 @@ function endSillyTouch(e) {
   if (next) {
     const point = next[1];
     point.startX = point.x; point.startY = point.y; point.at = null; point.dragging = false;
+    point.centerSwipe = dist(point.x, point.y, state.sun.x, state.sun.y) < state.sun.r * .25;
     silly.velocity = 0;
   }
 }
@@ -840,18 +1048,47 @@ function updateSilly(dt) {
     silly.angle += silly.velocity * (1 - decay) / 3;
     silly.velocity *= decay;
   }
-  const tickling = state.time < silly.tickleUntil;
+  const touch = silly.touches.get(silly.dragId);
+  const moving = touch?.dragging && state.time - touch.lastMove < .12;
+  const autoAge = state.time - silly.spinAt;
+  const autoSpeed = autoAge >= 0 && autoAge < 1.1 ? TAU * 6 * (autoAge / 1.1) * (1 - autoAge / 1.1) / 1.1 : 0;
+  const speed = moving || (silly.dragId === null && state.time < silly.coastUntil) ? Math.abs(silly.velocity) : autoSpeed;
+  silly.spinSpeed += (speed - silly.spinSpeed) * (1 - Math.exp(-dt * 12));
+  const previousBand = silly.spinBand;
+  silly.spinBand = silly.spinSpeed < (previousBand ? .45 : .8) ? 0 : silly.spinSpeed > (previousBand === 2 ? 2.8 : 3.8) ? 2 : 1;
+  // Give the speed estimate time to settle: a fast swipe must not say 'Whoa'
+  // on its first frame simply because smoothing starts at zero. A short coast
+  // may complete this deliberate onset, but resting fingers cannot do so.
+  if (speed > .7) {
+    if (silly.spinActiveAt === -99) silly.spinActiveAt = state.time - dt;
+  } else silly.spinActiveAt = -99;
+  if (silly.spinActiveAt !== -99 && state.time - silly.spinActiveAt >= .10 && silly.spinBand) {
+    const fast = silly.spinBand === 2;
+    if (state.time - silly.reactionVisualAt >= 1.4) {
+      showWord(fast ? 'Wheee!' : 'Whoa!', '#ffe497');
+      silly.reactionVisualAt = state.time;
+    }
+    if (state.time - silly.reactionAt >= 1.4 && playReaction(fast ? 'reaction-whee' : 'reaction-whoa')) silly.reactionAt = state.time;
+  }
+  const featherAge = state.time - silly.featherAt;
+  const tickling = featherAge >= .35 && featherAge < 1.85;
   if (!tickling) {
-    if (silly.tickling) stopSillySounds();
+    if (silly.tickling) { stopSillySounds(); stopReaction(); }
     silly.tickling = false;
     return;
   }
+  if (!silly.tickling) { showWord('Hee hee hee!', '#ffe497'); playReaction('reaction-giggle'); }
   silly.tickling = true;
   silly.effect = 3;
   silly.lastTap = state.time;
   if (state.time < silly.laughAt) return;
   stopSillySounds();
-  silly.sounds = [0,1,2].map(i => tone(i % 2 ? 640 : 470, i * .12, .14, .1, 'triangle', 260));
+  if (readyClips.has('reaction-giggle')) return;
+  silly.sounds = [0,1,2].flatMap(i => {
+    const pitch = [460, 580, 510][i];
+    return [tone(pitch, i * .12, .12, .085, 'sine', pitch * .72),
+      tone(pitch * 2, i * .12, .095, .025, 'triangle', pitch * 1.5)];
+  });
   silly.laughAt = state.time + .42;
   burst(state.sun.x, state.sun.y - state.sun.r * .6, '#ffb5d0', 5);
 }
@@ -864,16 +1101,42 @@ function sillyRotation() {
 }
 
 function sillyToys() {
-  return ['feather', 'gift'].map((kind, i) => ({ kind, x: W * (.12 + i * .76), y: H * .56, r: Math.min(50, H * .065) }));
+  if (isPortrait()) return ['feather', 'gift', 'bubbles'].map((kind, i) => ({ kind, x: W * (.2 + i * .3), y: friendDockTop() - 71, r: 32 }));
+  return [{ kind: 'feather', x: W * .12, y: H * .56 }, { kind: 'gift', x: W * .88, y: H * .56 }, { kind: 'bubbles', x: W * .88, y: H * .3 }].map(toy => ({ ...toy, r: Math.min(50, H * .065) }));
+}
+
+// Bubbles stay in side lanes, outside the hero grab area and all controls.
+function makeBubbles() {
+  if (isPortrait()) {
+    state.silly.bubbles = [0, 1, 2, 3].map(i => ({ x: W * (i % 2 ? .85 : .15), y: i < 2 ? playgroundTitleY() + 52 : playgroundCaptionY() - 32, r: 22, note: i * 2, phase: i * 1.7, at: state.time }));
+    return;
+  }
+  const r = Math.min(34, H * .044);
+  state.silly.bubbles = [0, 1, 2, 3].map((i) => ({
+    x: W * (i < 2 ? .12 : [.82, .94][i - 2]), y: H * (i < 2 ? [.25, .38][i] : .73),
+    r, note: i * 2, phase: i * 1.7, at: state.time
+  }));
+}
+function bubblePosition(b) {
+  return { x: b.x + Math.sin((state.time - b.at) * .65 + b.phase) * 5,
+    y: b.y + Math.sin((state.time - b.at) * .5 + b.phase) * 4 };
+}
+function drawBubbles() {
+  for (const b of state.silly.bubbles) {
+    const { x, y } = bubblePosition(b);
+    ctx.fillStyle = 'rgba(139,221,255,.12)'; circle(x, y, b.r);
+    ctx.strokeStyle = '#98dbe8'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.strokeStyle = '#f7dbff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, b.r * .82, 3.6, 4.8); ctx.stroke();
+    ctx.fillStyle = '#f3fbff'; circle(x - b.r * .38, y - b.r * .4, b.r * .12);
+  }
 }
 
 function sillyFriends() {
-  const gap = W / 9;
-  return [null, ...PLANETS].map((planet, i) => ({ planet, x: gap * (i + .5), y: H * .9, r: Math.min(30, H * .04, gap * .29), hit: Math.min(44, gap * .48) }));
+  return friendDock().map((slot, i) => ({ ...slot, planet: i ? PLANETS[i - 1] : null }));
 }
 
 function drawSillyFriends() {
-  ctx.fillStyle = 'rgba(13,23,47,.9)'; ctx.fillRect(0, H * .825, W, H * .175);
+  ctx.fillStyle = 'rgba(13,23,47,.9)'; ctx.fillRect(0, friendDockTop(), W, H - friendDockTop());
   for (const friend of sillyFriends()) {
     const selected = state.silly.friend === friend.planet;
     if (selected) {
@@ -882,9 +1145,9 @@ function drawSillyFriends() {
     }
     if (friend.planet) drawPlanet(friend.planet, friend.x, friend.y, friend.r / Math.max(1, friend.planet.span * .8), { happy: selected });
     else { smallSun(friend.x, friend.y, friend.r * .85); drawFace(friend.x, friend.y, friend.r * .8, false, 0, true); }
-    ctx.font = `700 ${Math.min(16, W * .016)}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `700 ${Math.max(12, Math.min(16, W * .016))}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = selected ? '#fff0a3' : '#d7e3ff';
-    ctx.fillText(friend.planet?.name || 'Sun', friend.x, H * .975);
+    ctx.fillText(friend.planet?.name || 'Sun', friend.x, friend.labelY);
   }
 }
 
@@ -905,11 +1168,16 @@ function drawFeather(x, y, size, tilt = -.5) {
 
 function drawSillyToys() {
   for (const toy of sillyToys()) {
-    const active = toy.kind === 'feather' ? state.silly.tickling : state.time < state.silly.accessoryUntil;
+    const active = toy.kind === 'feather' ? state.time < state.silly.tickleUntil : toy.kind === 'bubbles' ? state.silly.bubbles.length > 0 : state.time < state.silly.accessoryUntil;
     ctx.fillStyle = active ? '#476b83' : '#28364f'; circle(toy.x, toy.y, toy.r);
     ctx.strokeStyle = active ? '#fff0a3' : '#7286ad'; ctx.lineWidth = 3; ctx.stroke();
     if (toy.kind === 'feather') drawFeather(toy.x, toy.y, toy.r * 1.1);
-    else {
+    else if (toy.kind === 'bubbles') {
+      ctx.strokeStyle = '#9de7e8'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(toy.x - toy.r * .3, toy.y + toy.r * .52); ctx.lineTo(toy.x, toy.y); ctx.stroke();
+      ctx.lineWidth = 4; ctx.beginPath(); ctx.ellipse(toy.x + toy.r * .16, toy.y - toy.r * .2, toy.r * .3, toy.r * .34, .4, 0, TAU); ctx.stroke();
+      ctx.fillStyle = '#d3f4ff'; circle(toy.x - toy.r * .4, toy.y - toy.r * .4, toy.r * .12);
+    } else {
       const r = toy.r;
       ctx.fillStyle = '#ef8bb8'; ctx.fillRect(toy.x - r * .5, toy.y - r * .25, r, r * .8);
       ctx.fillStyle = '#ffd96a'; ctx.fillRect(toy.x - r * .09, toy.y - r * .3, r * .18, r * .85);
@@ -918,21 +1186,47 @@ function drawSillyToys() {
       for (const side of [-1, 1]) { ctx.beginPath(); ctx.ellipse(toy.x + side * r * .2, toy.y - r * .46, r * .2, r * .12, side * .5, 0, TAU); ctx.stroke(); }
     }
     ctx.font = '700 18px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff0bc';
-    ctx.fillText(toy.kind === 'feather' ? 'Tickle' : 'Surprise', toy.x, toy.y + toy.r + 19);
+    ctx.fillText(toy.kind === 'feather' ? 'Tickle' : toy.kind === 'bubbles' ? 'Bubbles' : 'Surprise', toy.x, toy.y + toy.r + 19);
   }
 }
 
 function drawSilly() {
   const sun = state.sun, silly = state.silly;
+  // A quiet pool of starlight gives the toy its own little stage.
+  const stage = ctx.createRadialGradient(sun.x, sun.y, 0, sun.x, sun.y, Math.min(W * .48, H * .4));
+  stage.addColorStop(0, 'rgba(89,111,190,.2)'); stage.addColorStop(1, 'rgba(89,111,190,0)');
+  ctx.fillStyle = stage; circle(sun.x, sun.y, Math.min(W * .48, H * .4));
+  drawBubbles();
   const age = state.time - silly.lastTap;
   const active = age < 1.2;
   const wobble = active ? Math.sin((silly.tickling ? state.time : age) * 24) * .1 * Math.exp(-age * 3) : 0;
   const friend = silly.friend;
-  const r = sun.r * (friend?.ring ? .78 : 1) * (active ? 1 + .07 * Math.sin((silly.tickling ? state.time : age) * 18) * Math.exp(-age * 3) : 1);
+  // Fit the full rotating silhouette (rings, rays and hats) between name and caption.
+  // The generous, fixed grab target remains unchanged while the character performs.
+  const extent = Math.max(1.32, friend ? (friend.ring ? friend.ring.radius + friend.ring.width / 2 : 1) : 1.36);
+  const reach = Math.max(40, Math.min(sun.y - (playgroundTitleY() + 35), playgroundCaptionY() - 30 - sun.y, (W - safeLeft - safeRight) * .46));
+  const r = Math.min(sun.r, reach / (extent * 1.07)) * (active ? 1 + .07 * Math.sin((silly.tickling ? state.time : age) * 18) * Math.exp(-age * 3) : 1);
   const dragging = silly.touches.get(silly.dragId)?.dragging;
   const surprise = state.time < silly.accessoryUntil;
+  if (silly.count === 0 && !silly.spinBand) {
+    // Two quiet curved arrows demonstrate turning without moving the child's toy.
+    ctx.save(); ctx.strokeStyle = '#92b7d9'; ctx.fillStyle = '#92b7d9'; ctx.lineWidth = 3;
+    const guideR = r * 1.5;
+    for (const offset of [0, Math.PI]) {
+      const end = offset + .7;
+      ctx.beginPath(); ctx.arc(sun.x, sun.y, guideR, offset - .5, end); ctx.stroke();
+      ctx.save(); ctx.translate(sun.x + Math.cos(end) * guideR, sun.y + Math.sin(end) * guideR); ctx.rotate(end);
+      ctx.beginPath(); ctx.moveTo(0, 8); ctx.lineTo(-6, -4); ctx.lineTo(6, -4); ctx.closePath(); ctx.fill(); ctx.restore();
+    }
+    ctx.restore();
+  }
+  if (silly.spinBand) {
+    ctx.save(); ctx.strokeStyle = 'rgba(178,224,255,.35)'; ctx.lineWidth = 3;
+    for (let i = 0; i < 2; i++) { ctx.beginPath(); ctx.arc(sun.x, sun.y, r * 1.17, sillyRotation() + i * Math.PI, sillyRotation() + i * Math.PI + .45); ctx.stroke(); }
+    ctx.restore();
+  }
   ctx.save(); ctx.translate(sun.x, sun.y); ctx.rotate((dragging ? 0 : wobble) + sillyRotation());
-  const mouth = active ? .5 + .3 * Math.sin((silly.tickling ? state.time : age) * 20) : 0;
+  const mouth = silly.spinBand ? (silly.spinBand === 2 ? .8 : .45) + .12 * Math.sin(state.time * 12) : active ? .5 + .3 * Math.sin((silly.tickling ? state.time : age) * 20) : 0;
   if (friend) drawPlanet(friend, 0, 0, r, { happy: true, blink: active && silly.effect === 3, mouth });
   else { smallSun(0, 0, r); drawFace(0, 0, r * .9, active && silly.effect === 3, 0, true, mouth); }
   ctx.save(); ctx.rotate(friend?.faceTilt || 0);
@@ -977,10 +1271,21 @@ function drawSilly() {
     }
     ctx.globalAlpha = 1;
   }
-  if (!state.word || state.time - state.word.at > 3.5) sticker((friend?.name || 'Silly Sun') + '!', W / 2, safeTop + H * .15, Math.min(64, W * .065), '#ffd66d');
-  ctx.font = `700 ${Math.min(26, W * .03)}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff0bc';
-  ctx.fillText(silly.tickling ? 'Tickle tickle!' : 'Tap for music • Drag to spin!', W / 2, H * .79);
-  if (silly.tickling) drawFeather(sun.x + sun.r * .6 + Math.sin(state.time * 18) * 20, sun.y + sun.r * .05, sun.r * .65, -.6 + Math.sin(state.time * 15) * .25);
+  sticker(friend?.name || 'Sun', W / 2, playgroundTitleY(), Math.max(32, Math.min(64, W * .065)), friend?.glow || '#ffd66d');
+  ctx.font = `700 ${Math.max(18, Math.min(26, W * .03))}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff0bc';
+  const reaction = state.word && state.time - state.word.at < 1.4 ? state.word.text : '';
+  ctx.fillText(reaction || (silly.count === 0 ? 'Give me a spin!' : ''), W / 2, playgroundCaptionY());
+  // Travel from the actual toy to the cheek, rub on contact, then return.
+  const featherAge = state.time - silly.featherAt;
+  if (featherAge >= 0 && featherAge < 2.2) {
+    const toy = sillyToys()[0];
+    const travel = featherAge < .35 ? featherAge / .35 : featherAge > 1.85 ? (2.2 - featherAge) / .35 : 1;
+    const k = travel * travel * (3 - 2 * travel);
+    const rub = silly.tickling ? Math.sin((featherAge - .35) * 18) : 0;
+    const tx = sun.x - r * .63 + rub * 12, ty = sun.y + r * .14;
+    drawFeather(toy.x + (tx - toy.x) * k, toy.y + (ty - toy.y) * k,
+      toy.r * 1.1 + (sun.r * .65 - toy.r * 1.1) * k, .5 + rub * .2);
+  }
   drawSillyToys();
   drawSillyFriends();
 }
@@ -1054,14 +1359,18 @@ function updateSong() {
 }
 
 function songControls() {
-  const margin = Math.max(16, W * .035), gap = 12;
-  const y = H - 78;
-  const width = (W - margin * 2 - gap * 2) / 3;
-  return {
-    y: y - 52,
-    buttons: SONGS.map((song, index) => ({ x: margin + index * (width + gap), y, w: width, h: 66 })),
-    stop: { x: W - margin - 106, y: y - 48, w: 106, h: 44 },
-  };
+  const portrait = isPortrait();
+  const margin = Math.max(12, W * .035), gap = portrait ? 6 : 12;
+  const left = safeLeft + margin, right = W - safeRight - margin;
+  if (portrait) {
+    const y = H - safeBottom - 190;
+    return { y, buttons: SONGS.map((song, i) => ({ x: left, y: y + 44 + i * 47, w: right - left, h: 44 })),
+      stop: { x: right - 88, y: y + 1, w: 88, h: 40 } };
+  }
+  const y = H - safeBottom - 78;
+  const width = (right - left - gap * 2) / 3;
+  return { y: y - 52, buttons: SONGS.map((song, index) => ({ x: left + index * (width + gap), y, w: width, h: 66 })),
+    stop: { x: right - 106, y: y - 48, w: 106, h: 44 } };
 }
 
 function insideRect(x, y, rect) {
@@ -1073,8 +1382,8 @@ function drawSongControls() {
   ctx.fillStyle = 'rgba(8,14,36,.94)';
   ctx.fillRect(0, controls.y, W, H - controls.y);
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.font = '700 21px system-ui'; ctx.fillStyle = '#fff0a3';
-  ctx.fillText(playing ? 'Playing: ' + SONGS[playing.index].title + ' ' + SONGS[playing.index].subtitle : 'Pick a song • Play along!', controls.buttons[0].x, controls.y + 26, W - controls.buttons[0].x * 2 - 126);
+  ctx.font = `700 ${isPortrait() ? 16 : 21}px system-ui`; ctx.fillStyle = '#fff0a3';
+  ctx.fillText(isPortrait() ? (playing ? 'Sing along!' : 'Pick a song') : playing ? 'Playing: ' + SONGS[playing.index].title + ' ' + SONGS[playing.index].subtitle : 'Pick a song • Play along!', controls.buttons[0].x, controls.y + 26, W - controls.buttons[0].x * 2 - 126);
   if (playing) {
     const stop = controls.stop;
     ctx.fillStyle = '#69435d'; ctx.fillRect(stop.x, stop.y, stop.w, stop.h);
@@ -1087,10 +1396,10 @@ function drawSongControls() {
     const selected = playing?.index === index;
     ctx.fillStyle = selected ? '#435698' : '#202e55'; ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
     ctx.textAlign = 'center'; ctx.fillStyle = selected ? '#fff0a3' : '#f3f5ff';
-    ctx.font = `800 ${Math.min(22, W * .024)}px system-ui`;
-    ctx.fillText((selected ? '♪ ' : '▶ ') + SONGS[index].title, rect.x + rect.w / 2, rect.y + 25, rect.w - 16);
+    ctx.font = `800 ${isPortrait() ? 16 : Math.min(22, W * .024)}px system-ui`;
+    ctx.fillText((selected ? '♪ ' : '▶ ') + SONGS[index].title + (isPortrait() ? ' ' + SONGS[index].subtitle : ''), rect.x + rect.w / 2, rect.y + (isPortrait() ? 21 : 25), rect.w - 16);
     ctx.font = `600 ${Math.min(17, W * .019)}px system-ui`; ctx.fillStyle = '#cbd6f4';
-    ctx.fillText(SONGS[index].subtitle, rect.x + rect.w / 2, rect.y + 51, rect.w - 16);
+    if (!isPortrait()) ctx.fillText(SONGS[index].subtitle, rect.x + rect.w / 2, rect.y + 51, rect.w - 16);
   });
 }
 
@@ -1141,7 +1450,7 @@ function playBody(body, live) {
     if (state.talk) sfx.chime(8);
     else {
       sfx.thump();
-      ripple(body.x + body.r * 0.8, body.y, '#ffd24a');
+      ripple(body.x + (isPortrait() || H < 500 ? 0 : body.r * .8), body.y, '#ffd24a');
     }
     burst(body.x + body.r * 0.8, body.y, '#ffd24a', 20);
     showWord('Sun', '#ffd24a');
@@ -1214,7 +1523,7 @@ function hitBody(x, y) {
 }
 
 function speakerButton() {
-  return { x: W - HOME.x, y: HOME.y, r: HOME.r };
+  return { x: W - 46 - safeRight, y: HOME.y, r: HOME.r };
 }
 
 canvas.addEventListener('pointerdown', (e) => {
@@ -1222,12 +1531,17 @@ canvas.addEventListener('pointerdown', (e) => {
   unlockAudio();
   preloadVoice();
   const { clientX: x, clientY: y } = e;
+  const sound = soundControl();
+  if (dist(x, y, sound.x, sound.y) <= sound.r + 8) {
+    setSoundMode({ normal: 'soft', soft: 'off', off: 'normal' }[soundMode]);
+    return;
+  }
 
   if (state.mode === 'menu') {
     const btn = state.menuButtons.find((b) => dist(x, y, b.x, b.y) <= b.r);
     if (btn) {
-      sfx.fanfare();
       setMode(btn.mode);
+      sfx.fanfare();
     } else {
       sfx.sparkle();
       shootingStar(x, y);
@@ -1319,7 +1633,7 @@ function exploreTap(x, y, pointerId) {
 }
 
 function talkButton() {
-  return { x: W - HOME.x, y: HOME.y, r: HOME.r };
+  return { x: W - 46 - safeRight, y: HOME.y, r: HOME.r };
 }
 
 function findTap(x, y) {
@@ -1423,7 +1737,7 @@ function update(dt) {
   if (state.mode === 'explore') {
     for (const b of state.bodies) {
       const o = b.orbit;
-      if (!state.talk || state.spotlight) continue; // Freeze targets while children play music.
+      if (!o || !state.talk || state.spotlight) continue; // Compact grids and musical targets stay still.
       o.time += dt;
       const a = o.a0 + o.amp * Math.sin(o.time * o.speed + o.phase);
       b.x = state.sun.x + o.r * Math.cos(a);
@@ -1547,7 +1861,16 @@ function drawEmojiButton(btn, emoji) {
 }
 
 function drawHome() {
-  drawEmojiButton(HOME, '🏠');
+  const { x, y, r } = HOME;
+  ctx.fillStyle = '#28364f'; circle(x, y, r);
+  ctx.strokeStyle = '#7286ad'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.strokeStyle = '#fff0bc'; ctx.lineWidth = r * .12;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath(); ctx.moveTo(x - r * .5, y - r * .02);
+  ctx.lineTo(x, y - r * .48); ctx.lineTo(x + r * .5, y - r * .02);
+  ctx.moveTo(x - r * .35, y - r * .1); ctx.lineTo(x - r * .35, y + r * .4);
+  ctx.lineTo(x + r * .35, y + r * .4); ctx.lineTo(x + r * .35, y - r * .1);
+  ctx.moveTo(x, y + r * .4); ctx.lineTo(x, y + r * .12); ctx.stroke();
 }
 
 function drawFindHud() {
@@ -1555,7 +1878,7 @@ function drawFindHud() {
   const n = 5;
   const gap = Math.min(56, (W - 220) / n);
   const x0 = W / 2 - (gap * (n - 1)) / 2;
-  const y = H - Math.max(28, H * 0.06);
+  const y = H - safeBottom - Math.max(28, H * 0.06);
   for (let i = 0; i < n; i++) {
     starPath(x0 + i * gap, y, gap * 0.42, gap * 0.19, 0);
     const pending = state.starFlight && state.time - state.starFlight.at < 0.9 && i === state.starFlight.index;
@@ -1574,7 +1897,7 @@ function drawMenu() {
   ctx.fillStyle = '#fff';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = `bold ${Math.round(H * 0.1)}px system-ui, sans-serif`;
+  ctx.font = `bold ${Math.round(Math.min(H * .1, W * .12, 80))}px system-ui, sans-serif`;
   ctx.fillText('Planet Pals', W / 2, safeTop + H * 0.17);
 
   const [explore, find, silly] = state.menuButtons;
@@ -1586,7 +1909,7 @@ function drawMenu() {
     ctx.lineWidth = 4;
     ctx.stroke();
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.font = `bold ${Math.round(btn.r * 0.2)}px system-ui, sans-serif`;
+    ctx.font = `bold ${Math.round(Math.max(18, btn.r * .2))}px system-ui, sans-serif`;
     ctx.fillText(btn.label, btn.x, btn.y + btn.r + btn.r * 0.22);
   }
 
@@ -1596,6 +1919,8 @@ function drawMenu() {
   ctx.fillText('🔍', find.x + find.r * 0.38, find.y - find.r * 0.3);
   smallSun(silly.x, silly.y, silly.r * .56);
   drawFace(silly.x, silly.y, silly.r * .5, false, 0, true, .6);
+  drawPlanet(PLANETS[2], silly.x - silly.r * .57, silly.y + silly.r * .45, silly.r * .26, { happy: true });
+  drawPlanet(PLANETS[5], silly.x + silly.r * .52, silly.y + silly.r * .48, silly.r * .23, { happy: true });
 }
 
 function drawRipples() {
@@ -1634,7 +1959,6 @@ function draw() {
   } else if (state.mode === 'silly') {
     drawRipples();
     drawSilly();
-    drawWord();
     drawHome();
   } else {
     if (state.mode === 'explore' && !state.spotlight) {
@@ -1656,6 +1980,7 @@ function draw() {
   }
   drawParticles();
   if (shake < 0.35) ctx.restore();
+  drawSoundControl();
 }
 
 // ---------- Character performance and Talk stage ----------
@@ -1686,15 +2011,21 @@ function sticker(text, x, y, size, color, maxWidth = W * 0.8) {
 
 function dockBodies() {
   const items = [state.sun, ...state.bodies];
+  if (isPortrait() || H < 500) return friendDock().map((slot, i) => ({ ...slot, body: items[i] }));
   const slot = W / items.length;
   return items.map((body, i) => ({ body, x: slot * (i + 0.5), y: H * 0.865,
-    r: Math.min(H * 0.048, slot * 0.27), hit: Math.min(slot * 0.49, H * 0.105) }));
+    r: Math.min(H * 0.048, slot * 0.27), hit: Math.min(slot * 0.49, H * 0.105), labelY: H * .955 }));
 }
 function spotlightHero() {
   const p = state.spotlight.body.planet;
+  if (isPortrait()) {
+    const top = safeTop + 160, bottom = friendDockTop();
+    return { x: W * .5, y: top + (bottom - top) * .3, r: Math.min(W * .28 / (p?.span || 1), (bottom - top) * .23) };
+  }
+  if (H < 500) return { x: W * .28, y: (safeTop + 150 + friendDockTop()) / 2, r: Math.min((friendDockTop() - safeTop - 150) * .39, W * .16 / (p?.span || 1)) };
   return { x: W * 0.28, y: H * 0.43, r: Math.min(H * 0.205, W * 0.205 / (p?.span || 1)) };
 }
-function spotlightClose() { return { x: W - 46, y: safeTop + H * 0.19, r: 26 }; }
+function spotlightClose() { return { x: W - safeRight - 36, y: isPortrait() ? safeTop + 140 : Math.max(safeTop + 125, safeTop + H * .19), r: 24 }; }
 
 const TITLE_COLORS = ['#677589','#da8527','#328cc9','#ce563d','#b77447','#bd8a36','#239ca8','#456acb'];
 const FACTS = {
@@ -1787,32 +2118,40 @@ function drawSpotlight() {
   const glow = ctx.createRadialGradient(hero.x,hero.y,0,hero.x,hero.y,hero.r*1.9);
   glow.addColorStop(0,'rgba(117,125,221,0.23)'); glow.addColorStop(1,'rgba(117,125,221,0)');
   ctx.fillStyle=glow; circle(hero.x,hero.y,hero.r*1.9);
-  sticker(name,hero.x,H*.135,Math.min(H*.079,W*.053),p ? TITLE_COLORS[PLANETS.indexOf(p)] : '#eaa325',W*.43);
+  sticker(name,hero.x,isPortrait() ? safeTop + 140 : Math.max(safeTop + 126, H*.135),isPortrait() ? 30 : Math.min(H*.079,W*.053),p ? TITLE_COLORS[PLANETS.indexOf(p)] : '#eaa325',W*(isPortrait() ? .65 : .43));
   if (p) drawPlanet(p,hero.x,hero.y,hero.r*scale,{blink:blinkFor(body.seed),...performanceFor(body)});
   else { smallSun(hero.x,hero.y,hero.r*scale); drawFace(hero.x,hero.y,hero.r*.72,blinkFor(1),0,true,performanceFor(body).mouth); }
   // One idea at a time; picture and words enter just after the character.
   ctx.save(); ctx.globalAlpha=Math.min(1,Math.max(0,(age-.18)/.3));
-  drawFactPicture(name,W*.71,H*.355,H*.13);
-  FACTS[name].forEach((line,i)=>sticker(line,W*.71,H*(.56+i*.071),H*.052,'#ef9747',W*.4));
+  if (isPortrait()) {
+    const factY = hero.y + hero.r + 62;
+    drawFactPicture(name, W * .23, factY, Math.min(40, (friendDockTop() - factY) * .6));
+    FACTS[name].forEach((line,i)=>sticker(line,W*.64,factY-12+i*27,22,'#ef9747',W*.57));
+  } else {
+    drawFactPicture(name,W*.71,H*(H < 500 ? .41 : .355),H*(H < 500 ? .09 : .13));
+    FACTS[name].forEach((line,i)=>sticker(line,W*.71,H*(.56+i*.071),H*.052,'#ef9747',W*.4));
+  }
   ctx.restore();
   const close=spotlightClose(); drawEmojiButton(close,'×');
   ctx.fillStyle='#dce6ff'; ctx.font='600 12px system-ui'; ctx.textAlign='center';
   ctx.fillText('All planets',close.x,close.y+43);
-  ctx.fillStyle='rgba(17,24,48,0.95)'; ctx.fillRect(0,H*.755,W,H*.245);
-  ctx.fillStyle='rgba(204,218,255,0.15)'; ctx.fillRect(0,H*.755,W,2);
+  ctx.fillStyle='rgba(17,24,48,0.95)'; ctx.fillRect(0,isPortrait() || H < 500 ? friendDockTop() : H*.755,W,H);
+  ctx.fillStyle='rgba(204,218,255,0.15)'; ctx.fillRect(0,isPortrait() || H < 500 ? friendDockTop() : H*.755,W,2);
   for(const d of dockBodies()) {
     const selected=d.body===body;
     if(selected) { ctx.fillStyle='rgba(255,224,131,0.16)'; circle(d.x,d.y,d.r*1.65); }
     if(d.body.planet) drawPlanet(d.body.planet,d.x,d.y,d.r,{...performanceFor(d.body),blink:blinkFor(d.body.seed)});
     else smallSun(d.x,d.y,d.r*.85);
     ctx.fillStyle=selected ? '#ffe497' : '#d7dff4';
-    ctx.font=`700 ${Math.min(18,W*.014)}px system-ui`; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText(d.body.planet?.name || 'Sun',d.x,H*.955);
+    ctx.font=`700 ${isPortrait() ? 12 : Math.max(12,Math.min(18,W*.014))}px system-ui`; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(d.body.planet?.name || 'Sun',d.x,d.labelY);
   }
 }
 
 // Two personal stars sit above the planet row, clear of the top controls.
 function nameStars() {
+  if (isPortrait()) return ['Jettson', 'Langston'].map((name, i) => ({ name, x: W * (.3 + i * .4), y: safeTop + 157 }));
+  if (H < 500) return ['Jettson', 'Langston'].map((name, i) => ({ name, x: W * (.4 + i * .22), y: safeTop + 121 }));
   return ['Jettson', 'Langston'].map((name, index) => ({ name, x: W * (.38 + index * .24), y: Math.max(safeTop + 158, H * .29) }));
 }
 
@@ -1844,7 +2183,7 @@ function drawStarFlight() {
   if(!f || state.mode!=='find') return;
   const age=state.time-f.at, k=Math.min(1,age/.9), eased=1-Math.pow(1-k,3);
   const gap=Math.min(56,(W-220)/5);
-  const tx=W/2+gap*(f.index-2), ty=H-Math.max(28,H*.06);
+  const tx=W/2+gap*(f.index-2), ty=H-safeBottom-Math.max(28,H*.06);
   if(age>1.3) return;
   const x=f.x+(tx-f.x)*eased, y=f.y+(ty-f.y)*eased-Math.sin(k*Math.PI)*H*.15;
   ctx.save(); ctx.globalAlpha=age<.9 ? 1 : Math.max(0,1-(age-.9)/.4);
@@ -1865,6 +2204,7 @@ function frame(now) {
 }
 
 function quietGame() {
+  stopTransientSounds();
   stopSilly();
   stopSong();
   releaseAllHolds();
