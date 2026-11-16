@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const source = fs.readFileSync('sw.js', 'utf8');
 const origin = 'https://example.test';
-const cacheName = 'planet-pals-v17';
+const cacheName = 'planet-pals-v18';
 function worker() {
   const listeners = {}, stores = new Map(), events = [], added = [];
   let network = async () => new Response('online'), rejectAdd = false, rejectPut = false, claimWait;

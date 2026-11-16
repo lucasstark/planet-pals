@@ -484,3 +484,21 @@ and launches the original nine-friend playground without console warnings/errors
 Release v17 adds versioned script/style URLs and their offline copies after the
 public upgrade check exposed browser reuse of v15 game.js with the new shell.
 This avoids mixing old engine code with new adventures during an update.
+
+## Big Pip simple play (2026-11-16, v18 release)
+
+- Home now opens directly to a large Pip and “Tap me!” with no activity chooser.
+  More games opens the previous hub under the internal `activities` screen.
+- Home Pip responds on pointerdown; keyboard clicks also work. Six reactions
+  cycle through giggles, a spin, high five, hats, boing and a Saturn-ring wobble.
+  A 170 ms input throttle and replaceable sound phrase keep mashing bounded.
+  The button stays stationary; only its portrait animates. Reduced motion removes
+  the portrait animations while retaining poses, captions and sounds.
+- Blur, hiding and resize clear active reactions and audio. Existing sound/help
+  controls and all secondary activities remain. No new assets or dependencies.
+- Worker and versioned URLs are v18. All 49 Node tests and JS/shell syntax checks
+  pass. Browser checks covered immediate taps, spin, More games/Home, and layouts
+  at 1280×720, 1024×768 and 390×844; no console warnings/errors were observed.
+  Fire/iPad audio, touch, and real offline/update behavior still need device tests.
+  Deployment to the existing GitHub Pages site authorized on 2026-11-16.
+  Publishing uses the repository’s main branch and root directory.

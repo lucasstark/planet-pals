@@ -36,6 +36,8 @@
   let screen = 'home', round = 0, solved = false, selected = null, placed = [], letters = [], hat = 0;
   let reactionTimer, voiceTimer, reactionCount = 0, soundNodes = [], lastReaction = 0, drag = null, suppressClickUntil = 0;
   let orderLevel = 0, questionList = [];
+  let pipTapCount = 0;
+  const pipReactions = ['tickle', 'win', 'five', 'hat', 'curious', 'ring'];
   const orderSets = [[0, 1, 2], [0, 1, 2, 3], [0, 1, 2, 3, 4, 5, 6, 7]];
   const facts = [
     ['Closest to the Sun', 'Mercury is the closest planet to the Sun.'],
@@ -101,7 +103,7 @@
     clearTimeout(voiceTimer); stopSpeaking();
     const el = root.querySelector('.buddy'); if (!el) return;
     clearTimeout(reactionTimer);
-    el.classList.remove('tickle', 'flip', 'five', 'dance', 'wobble');
+    el.classList.remove('tickle', 'flip', 'five', 'dance', 'wobble', 'wear-ring');
     void el.offsetWidth;
     const responses = kind === 'tickle' ? ['Hee hee! My space tummy!', 'Again, again!', 'You found my giggle button!'] : kind === 'five' ? ['High five, space friend!', 'Boop! A cosmic high five!'] : kind === 'hat' ? ['Does this suit my spacesuit?', 'Ready for a silly spacewalk!'] : kind === 'win' ? ['We did it!', 'A space somersault for you!'] : kind === 'ring' ? ['A ring for me? Whoooa!', 'I’m a wobbly little Saturn!'] : ['Let’s try together!'];
     el.querySelector('.reaction').textContent = responses[reactionCount % responses.length];
@@ -109,7 +111,13 @@
     el.classList.add(kind === 'win' ? 'flip' : kind === 'five' ? 'five' : kind === 'hat' || kind === 'ring' ? 'wobble' : kind === 'curious' ? 'dance' : 'tickle');
     if (kind === 'hat') { hat = (hat + 1) % 4; el.querySelector('.pip-hat').textContent = ['','🎉','👑','🌈'][hat]; }
     if (kind === 'ring') el.classList.add('wear-ring');
-    musical(kind === 'tickle' ? 'giggle' : kind === 'win' ? 'win' : 'tap');
+    if (screen === 'home') {
+      el.querySelector('.reaction').textContent = {tickle:'Hee hee!', win:'Wheee!', five:'Boop!', hat:'Ta-da!', curious:'Boing!', ring:'Wobble wobble!'}[kind] || 'Hello!';
+    }
+    if (screen === 'home' && !muted && ['curious', 'ring'].includes(kind)) {
+      unlockAudio(); stopPhrase();
+      soundNodes.push(tone(180, 0, .32, .1, 'sine', 760), tone(760, .18, .24, .07, 'triangle', 220));
+    } else musical(kind === 'tickle' ? 'giggle' : kind === 'win' ? 'win' : 'tap');
     reactionTimer = setTimeout(() => { el.classList.remove('tickle','flip','five','dance','wobble','wear-ring'); el.querySelector('.reaction').textContent = ''; el.querySelector('.pip > img').src = 'art/pip.svg'; }, 1900);
   }
   function header(title, sub, key) {
@@ -131,7 +139,12 @@
     if (keys[next]) promptVoice(keys[next]);
   }
   function render() {
+    root.classList.toggle('pip-home', screen === 'home');
+    document.querySelector('#journey-home').hidden = screen === 'home';
     if (screen === 'home') {
+      root.innerHTML = `<section class="pip-play" aria-label="Play with Pip"><h1>Hi, I’m Pip!</h1>${buddy(true)}<p class="pip-invitation">Tap me!</p><button class="more-games" data-go="activities">More games</button></section>`;
+      root.querySelector('.pip').setAttribute('aria-label', 'Tap Pip for a silly surprise');
+    } else if (screen === 'activities') {
       root.innerHTML = `<div class="home-wrap">${header('Little friends. <em>Big universe.</em>', 'A space playground for Jettson & Langston', '')}<section class="welcome"><div class="welcome-copy"><span class="tag">MEET YOUR SPACE FRIEND</span><h2>Hi, I’m Pip!</h2><p>My tummy is ticklish.<br>Want to explore together?</p><button class="primary" data-go="play">Let’s play! <span>↗</span></button><button class="text-button" data-action="tickle">Psst… tap Pip!</button></div>${buddy(true)}<div class="welcome-planet">${image(5)}</div></section><div class="activity-heading"><h2>Where shall we go?</h2><button class="text-button" data-go="stickers">★ My stickers · ${collected.size}/8</button></div><section class="activity-grid" aria-label="Choose an activity"><button class="activity mint" data-go="meet">${image(2)}<strong>Meet the planets</strong><span>Tap, look & listen</span></button><button class="activity peach" data-go="order">${image(8)}<strong>Planet parade</strong><span>Put our friends in order</span></button><button class="activity lilac" data-go="detective"><span class="card-symbol">⌕</span><strong>Space detective</strong><span>A little clue. A big discovery.</span></button><button class="activity blue" data-go="puzzles">${image(5)}<strong>Cosmic matches</strong><span>Find the missing piece</span></button><button class="activity pink" data-go="letters"><span class="card-symbol letters-symbol">Aa</span><strong>Letters in space</strong><span>Build a planet’s name</span></button><button class="activity yellow" data-go="legacy"><span class="card-symbol">♫</span><strong>Music & planet play</strong><span>Our original songs & silly friends</span></button></section><p class="parent-note">Made for curious little explorers. Pictures, sizes and distances are simplified for play.</p></div>`;
     } else if (screen === 'legacy') {
       root.innerHTML = `${header('Music & planet play', 'Our familiar friends. All the old favorites.', '')}<div class="legacy-grid"><button class="activity yellow" data-launch="music"><span class="card-symbol">♫</span><strong>Make music</strong><span>Planet instruments & three favorite songs</span></button><button class="activity blue" data-launch="explore">${image(2)}<strong>Explore together</strong><span>Big planet portraits & spoken facts</span></button><button class="activity pink" data-launch="silly">${image(8)}<strong>Silly planet playground</strong><span>Spin, tickle & dress up all nine friends</span></button><button class="activity lilac" data-launch="find">${image(5)}<strong>Find it!</strong><span>Find a planet. Collect a sky full of stars.</span></button></div><p class="parent-note">Music and silly planet play work best on a landscape tablet. Use Home to return to Pip.</p>`;
@@ -243,7 +256,11 @@
       return;
     }
     if (b.dataset.voice) return speak(b.dataset.voice);
-    if (b.classList.contains('pip')) return react('tickle');
+    if (b.classList.contains('pip')) {
+      // Pointer taps already reacted on contact; keyboard activation still clicks.
+      if (screen === 'home') { if (e.detail === 0) tapPip(); return; }
+      return react('tickle');
+    }
     if (b.dataset.level!==undefined) { cleanup(); orderLevel=Number(b.dataset.level); placed=[];selected=null;solved=false;renderOrder();startOfScene();return; }
     if (b.dataset.planet!==undefined) {
       const p=Number(b.dataset.planet);
@@ -270,8 +287,15 @@
     else if (action==='next' && solved) { round++;solved=false; if(round===questionList.length) finish(screen==='detective'?1:5);else {cleanup();renderQuestion();promptVoice(questionList[round].key);} }
     else if (action==='spell-next' && solved) { if(round===2) finish(5);else {cleanup();round++;letters=[];solved=false;renderLetters();} }
   });
+  function tapPip() {
+    if (performance.now() - lastReaction < 170) return;
+    react(pipReactions[pipTapCount++ % pipReactions.length]);
+  }
   // Pointer dragging and tap selection share exactly the same placement logic.
   root.addEventListener('pointerdown', e => {
+    if (screen === 'home' && e.button === 0 && e.target.closest('.pip')) {
+      unlockAudio(); tapPip(); return;
+    }
     const b=e.target.closest('[data-draggable]'); if(!b || e.button>0 || drag) return;
     drag={id:e.pointerId,p:Number(b.dataset.planet),x:e.clientX,y:e.clientY,moving:false,source:b};
     b.setPointerCapture?.(e.pointerId);
@@ -298,8 +322,8 @@
   function applyMute() { setGameMuted(muted); updateSoundButton(); }
   window.onPlanetSoundChange = mode => { muted = mode === 'off'; if (muted) { clearTimeout(voiceTimer); stopPhrase(); } updateSoundButton(); save(); };
   document.querySelector('#mute').addEventListener('click',()=>{muted=!muted;cleanup();applyMute();save();});
-  window.addEventListener('resize',()=>{cancelDrag();stopPhrase();});
-  window.addEventListener('blur',()=>{clearTimeout(voiceTimer);stopPhrase();cancelDrag();});
-  document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(voiceTimer);stopPhrase();cancelDrag();}});
+  window.addEventListener('resize',cleanup);
+  window.addEventListener('blur',cleanup);
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)cleanup();});
   applyMute();go('home');
 })();

@@ -2165,3 +2165,54 @@ h1 em {
 #grown-ups { z-index:30; top:calc(var(--safe-top) + 12px); }
 
 .global-tools.on-canvas #journey-home { width:76px; min-width:76px; padding:10px 4px; }
+
+/* One big friend, one simple interaction. The button stays still during reactions. */
+#adventure.pip-home {
+  padding:0;
+  overflow:hidden;
+  touch-action:none;
+  background:radial-gradient(ellipse at 50% 45%, #effff1 0%, #d7f1e9 55%, #d9e4f5 100%);
+}
+.pip-play { position:absolute; inset:0; }
+.pip-play h1 {
+  position:absolute; top:calc(70px + var(--safe-top)); left:0; right:0;
+  font-size:clamp(24px,4vh,38px); margin:0; letter-spacing:-1px;
+}
+.pip-play .buddy {
+  position:absolute;
+  top:calc(108px + var(--safe-top)); bottom:calc(54px + var(--safe-bottom));
+  left:50%; transform:translateX(-50%);
+  height:auto; width:min(94vw, calc((100dvh - 162px - var(--safe-top) - var(--safe-bottom)) * .98));
+}
+.pip-play .pip { animation:none; touch-action:none; }
+.pip-play .pip > img { transform-origin:50% 58%; }
+.pip-play .tickle .pip > img { animation:tickle .14s ease-in-out 8 alternate; }
+.pip-play .flip .pip > img { animation:pip-spin 1s ease-in-out; }
+.pip-play .five .pip > img { animation:five .65s ease-in-out 2; }
+.pip-play .wobble .pip > img { animation:wobble .28s ease-in-out 5 alternate; }
+.pip-play .dance .pip > img { animation:pip-boing .7s ease-in-out; }
+.pip-play .reaction { bottom:0; font-size:20px; min-width:160px; }
+.pip-play .tickle-feather { display:none; }
+.pip-play .pip-hat { top:3%; left:42%; font-size:clamp(48px,10vh,100px); }
+.pip-play .pip-invitation {
+  position:absolute; bottom:calc(16px + var(--safe-bottom)); left:0; right:0;
+  margin:0; font-size:20px; font-weight:800; pointer-events:none; color:#426e69;
+}
+#adventure .more-games {
+  position:absolute; bottom:calc(8px + var(--safe-bottom)); right:max(12px,var(--safe-right));
+  min-height:44px; padding:10px 12px; border-radius:22px; background:#ffffffa6;
+  font-size:12px; font-weight:700;
+}
+@keyframes pip-spin { 50% { transform:scale(.72) rotate(180deg); } 100% { transform:rotate(360deg); } }
+@keyframes pip-boing { 25% { transform:scale(1.12,.8); } 60% { transform:translateY(-20px) scale(.9,1.08); } }
+@media (orientation:portrait) {
+  .pip-play .buddy { top:50%; bottom:auto; transform:translate(-50%,-45%); width:min(100vw, calc((100dvh - 190px) * .93)); height:min(107.5vw, calc(100dvh - 190px)); }
+}
+@media (max-height:500px) and (orientation:landscape) {
+  .pip-play h1 { top:20px; font-size:24px; }
+  .pip-play .buddy { top:48px; bottom:36px; width:calc((100dvh - 84px) * .98); }
+  .pip-play .pip-invitation { bottom:10px; font-size:16px; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .pip-play .buddy .pip > img { animation:none!important; }
+}

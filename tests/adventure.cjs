@@ -28,9 +28,9 @@ function journey(stored) {
   vm.runInNewContext(fs.readFileSync('adventure.js','utf8'),sandbox);
   function click(dataset={},extra={}) {
     const b={dataset,disabled:false,classList:element('button-class').classList,closest(){return b;},...extra};
-    events['root:click']({target:b});return b;
+    events['root:click']({target:b,detail:0});return b;
   }
-  return {click,nodes,saves,timers,html:()=>root.innerHTML,feedback:()=>element('#feedback').textContent,speech:()=>speech,notes:()=>notes,activeNotes:()=>activeNotes,advance:ms=>now+=ms,
+  return {pointer:()=>events['root:pointerdown']({button:0,target:{closest:()=>true}}),click,nodes,saves,timers,html:()=>root.innerHTML,feedback:()=>element('#feedback').textContent,speech:()=>speech,notes:()=>notes,activeNotes:()=>activeNotes,advance:ms=>now+=ms,
     go:screen=>click({go:screen}),muted:()=>events['#mute:click'](),home:()=>events['#journey-home:pointerdown']({button:0})};
 }
 test('parade retries incorrect placements, completes three levels and replays cleanly',()=>{
@@ -71,7 +71,7 @@ test('letters reject an incorrect tile, match each name and finish',()=>{
 });
 test('Home cancels pending prompts, sticker storage survives visits, corrupt storage is safe',()=>{
   const j=journey('{broken');j.go('detective');assert.ok(j.timers.size>0);j.home();assert.equal(j.timers.size,0);assert.match(j.html(),/Hi, I’m Pip/);
-  const saved=journey(JSON.stringify({muted:true,stickers:['Earth','not-a-planet']}));assert.match(saved.html(),/1\/8/);
+  const saved=journey(JSON.stringify({muted:true,stickers:['Earth','not-a-planet']}));saved.go('activities');assert.match(saved.html(),/1\/8/);
   saved.go('meet');saved.click({planet:'0'});assert.deepEqual(saved.saves.at(-1).stickers,['Earth','Mercury']);
   saved.muted();assert.equal(saved.saves.at(-1).muted,false);
 });
@@ -95,4 +95,21 @@ test('a grown-up can cancel or confirm a fresh sticker collection',()=>{
   j.click({action:'keep-stickers'});assert.equal(j.saves.length,0);
   j.click({action:'reset-stickers'});j.click({action:'confirm-reset'});
   assert.equal(j.saves.at(-1).stickers.length,0);assert.match(j.html(),/0 of 8/);
+});
+
+ test('big Pip reacts on contact, ignores duplicate clicks, varies surprises and stays bounded',()=>{
+  const j=journey();
+  assert.match(j.html(),/Tap me!/);assert.doesNotMatch(j.html(),/activity-grid/);
+  const responses=new Set();
+  for(let i=0;i<18;i++){
+    j.pointer();responses.add(j.nodes.get('.reaction').textContent);
+    assert.ok(j.activeNotes()<=15);
+    const notes=j.notes();j.pointer();assert.equal(j.notes(),notes);
+    j.advance(200);
+  }
+  assert.equal(responses.size,6);
+  j.muted();assert.equal(j.activeNotes(),0);
+  const notes=j.notes();j.pointer();assert.equal(j.notes(),notes);
+  j.go('activities');assert.match(j.html(),/activity-grid/);
+  j.home();assert.match(j.html(),/Tap me!/);assert.equal(j.timers.size,0);
 });
